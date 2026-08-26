@@ -21,16 +21,39 @@
     'linear-gradient(155deg,#CBB9D0 0%,#6E4C7A 48%,#3A2740 100%)',
     'linear-gradient(155deg,#D7C7A4 0%,#8A7B5C 48%,#4A422F 100%)'
   ];
+  // a trip's own uploaded cover photo takes priority over its default theme
+  // gradient — used for both the trip-card on the home list and the
+  // dashboard hero banner, so changing it in one place updates both.
+  function tripCoverBackgroundCSS(t){
+    if (t.coverPhoto){
+      return 'background:linear-gradient(180deg, rgba(20,18,15,0.12), rgba(20,18,15,0.55)), center/cover no-repeat url(\''+t.coverPhoto+'\');';
+    }
+    if (t.coverColor){
+      return 'background:'+t.coverColor+';';
+    }
+    return 'background:'+THEME_GRADIENTS[t.theme % THEME_GRADIENTS.length]+';';
+  }
 
   var members = [
-    {id:'you', name:'你', color:'#556052', avatarEmoji:null},
-    {id:'alex', name:'Alex', color:'#B8763F', avatarEmoji:null},
-    {id:'chris', name:'Chris', color:'#6E4C9A', avatarEmoji:null},
-    {id:'sam', name:'Sam', color:'#3D5F6E', avatarEmoji:null}
+    {id:'you', name:'你', color:'#556052', avatarEmoji:null, avatarPhoto:null, budget:7000},
+    {id:'alex', name:'Alex', color:'#B8763F', avatarEmoji:null, avatarPhoto:null, budget:6000},
+    {id:'chris', name:'Chris', color:'#6E4C9A', avatarEmoji:null, avatarPhoto:null, budget:6500},
+    {id:'sam', name:'Sam', color:'#3D5F6E', avatarEmoji:null, avatarPhoto:null, budget:6500}
   ];
+  // which member the current device/viewer is — lets the app show "your"
+  // budget/balance up front instead of a flat list of everyone's. Scoped per
+  // trip (kept alongside members/expenses/etc. in each trip's bundle) since
+  // the same physical person may map to a different member across trips.
+  var viewerId = 'you';
+  function memberExists(id){
+    for (var i=0;i<members.length;i++){ if (members[i].id===id) return true; }
+    return false;
+  }
 
   var trip = {
     theme:0,
+    coverPhoto:null,
+    coverColor:null,
     name:'東京', country:'日本', start:'2026-10-12', end:'2026-10-20', budget:26000,
     stats:{days:8, attractions:18, bookings:6, savedPlaces:18},
     todayPlan:[
@@ -46,6 +69,10 @@
       {label:'行李清單', done:false}
     ],
     leaderboardEnabled:true,
+    hotels:[
+      {id:'h1', name:'東京銀座格拉斯麗酒店', checkIn:'2026-10-12', checkOut:'2026-10-17', notes:'銀座站步行5分鐘'},
+      {id:'h2', name:'箱根仙石原溫泉旅館', checkIn:'2026-10-17', checkOut:'2026-10-19', notes:'有露天溫泉'}
+    ],
     regions:[
       {name:'銀座', loc:{x:50,y:50}}, {name:'淺草', loc:{x:21,y:30}}, {name:'上野', loc:{x:30,y:25}},
       {name:'新宿', loc:{x:38,y:40}}, {name:'澀谷', loc:{x:40,y:65}}, {name:'原宿', loc:{x:37,y:60}},
@@ -53,48 +80,48 @@
       {name:'箱根', loc:{x:5,y:90}}, {name:'東京迪士尼', loc:{x:95,y:40}}
     ],
     days:[
-      { date:'2026-10-12', weather:{temp:'24° / 18°', condition:'晴'}, items:[
+      { date:'2026-10-12', items:[
         {id:'d1-1', time:'10:30', title:'羽田機場抵達', category:'交通', loc:{x:90,y:80}, done:true, linkedExpenseId:null},
         {id:'d1-2', time:'12:30', title:'酒店 Check-in（銀座）', category:'住宿', loc:{x:50,y:50}, done:true, linkedExpenseId:null},
         {id:'d1-3', time:'14:00', title:'築地場外市場', category:'餐飲', loc:{x:55,y:55}, done:true, linkedExpenseId:null},
         {id:'d1-4', time:'17:00', title:'銀座逛街', category:'購物', loc:{x:50,y:48}, done:true, linkedExpenseId:null}
       ]},
-      { date:'2026-10-13', weather:{temp:'23° / 17°', condition:'多雲'}, items:[
+      { date:'2026-10-13', items:[
         {id:'d2-1', time:'09:00', title:'淺草寺', category:'景點', loc:{x:20,y:30}, done:true, linkedExpenseId:null},
         {id:'d2-2', time:'11:00', title:'仲見世通', category:'購物', loc:{x:22,y:31}, done:true, linkedExpenseId:null},
         {id:'d2-3', time:'13:00', title:'天婦羅午餐', category:'餐飲', loc:{x:23,y:32}, done:true, linkedExpenseId:null},
         {id:'d2-4', time:'15:00', title:'上野公園', category:'景點', loc:{x:30,y:25}, done:true, linkedExpenseId:null},
         {id:'d2-5', time:'18:00', title:'阿美橫町晚餐', category:'餐飲', loc:{x:31,y:26}, done:true, linkedExpenseId:null}
       ]},
-      { date:'2026-10-14', weather:{temp:'22° / 16°', condition:'晴'}, items:[
+      { date:'2026-10-14', items:[
         {id:'d3-1', time:'10:00', title:'明治神宮', category:'景點', loc:{x:35,y:60}, done:true, linkedExpenseId:null},
         {id:'d3-2', time:'12:30', title:'原宿午餐', category:'餐飲', loc:{x:36,y:61}, done:true, linkedExpenseId:null},
         {id:'d3-3', time:'14:00', title:'澀谷 Sky', category:'景點', loc:{x:40,y:65}, done:true, linkedExpenseId:null},
         {id:'d3-4', time:'19:00', title:'居酒屋晚餐', category:'餐飲', loc:{x:41,y:66}, done:true, linkedExpenseId:null}
       ]},
-      { date:'2026-10-15', weather:{temp:'21° / 16°', condition:'陣雨'}, items:[
+      { date:'2026-10-15', items:[
         {id:'d4-1', time:'09:30', title:'台場 Diver City', category:'景點', loc:{x:75,y:85}, done:true, linkedExpenseId:null},
         {id:'d4-2', time:'12:00', title:'台場午餐', category:'餐飲', loc:{x:76,y:86}, done:true, linkedExpenseId:null},
         {id:'d4-3', time:'15:00', title:'彩虹橋散步', category:'景點', loc:{x:74,y:84}, done:true, linkedExpenseId:null},
         {id:'d4-4', time:'18:30', title:'咖啡店', category:'餐飲', loc:{x:50,y:50}, done:true, linkedExpenseId:null}
       ]},
-      { date:'2026-10-16', weather:{temp:'22° / 17°', condition:'晴'}, items:[
+      { date:'2026-10-16', items:[
         {id:'d5-1', time:'08:30', title:'東京迪士尼樂園', category:'景點', loc:{x:95,y:40}, done:true, linkedExpenseId:null},
         {id:'d5-2', time:'13:00', title:'樂園午餐', category:'餐飲', loc:{x:95,y:40}, done:true, linkedExpenseId:null},
         {id:'d5-3', time:'20:00', title:'樂園晚餐', category:'餐飲', loc:{x:95,y:40}, done:true, linkedExpenseId:null}
       ]},
-      { date:'2026-10-17', weather:{temp:'19° / 14°', condition:'多雲'}, items:[
+      { date:'2026-10-17', items:[
         {id:'d6-1', time:'09:00', title:'箱根一日遊：溫泉', category:'活動', loc:{x:5,y:90}, done:false, linkedExpenseId:null},
         {id:'d6-2', time:'12:00', title:'蘆之湖觀光船', category:'活動', loc:{x:4,y:91}, done:false, linkedExpenseId:null},
         {id:'d6-3', time:'15:00', title:'溫泉旅館 Check-in', category:'住宿', loc:{x:5,y:92}, done:false, linkedExpenseId:null}
       ]},
-      { date:'2026-10-18', weather:{temp:'20° / 15°', condition:'晴'}, items:[
+      { date:'2026-10-18', items:[
         {id:'d7-1', time:'10:00', title:'秋葉原', category:'購物', loc:{x:45,y:20}, done:false, linkedExpenseId:null},
         {id:'d7-2', time:'13:00', title:'拉麵午餐', category:'餐飲', loc:{x:46,y:21}, done:false, linkedExpenseId:null},
         {id:'d7-3', time:'15:00', title:'東京晴空塔', category:'景點', loc:{x:48,y:18}, done:false, linkedExpenseId:null},
         {id:'d7-4', time:'18:00', title:'晚餐', category:'餐飲', loc:{x:47,y:19}, done:false, linkedExpenseId:null}
       ]},
-      { date:'2026-10-19', weather:{temp:'19° / 14°', condition:'晴'}, items:[
+      { date:'2026-10-19', items:[
         {id:'d8-1', time:'10:00', title:'自由活動／退房前收拾', category:'住宿', loc:{x:50,y:50}, done:false, linkedExpenseId:null},
         {id:'d8-2', time:'13:00', title:'機場交通', category:'交通', loc:{x:90,y:80}, done:false, linkedExpenseId:null},
         {id:'d8-3', time:'16:00', title:'羽田機場離境', category:'交通', loc:{x:90,y:80}, done:false, linkedExpenseId:null}
@@ -118,6 +145,46 @@
 
   var expenseCategories = ['住宿','餐飲','交通','活動','購物','門票','其他'];
   var shopCategoryOrder = ['必需品','衣物','藥物','食物','旅程用品'];
+
+  // ---------- currency conversion ----------
+  // We can't call a live FX API from inside a published artifact (same CSP
+  // restriction that blocks Google Maps), so rates here are fixed reference
+  // values rather than live/real-time — good enough to help split HKD budgets
+  // for spending logged in a local currency, not for precise accounting.
+  var CURRENCY_LIST = [
+    {code:'HKD', symbol:'HK$', label:'HK$ 港幣', rate:1},
+    {code:'JPY', symbol:'¥', label:'¥ 日圓 JPY', rate:0.052},
+    {code:'USD', symbol:'US$', label:'US$ 美元 USD', rate:7.8},
+    {code:'CNY', symbol:'CN¥', label:'CN¥ 人民幣 CNY', rate:1.09},
+    {code:'TWD', symbol:'NT$', label:'NT$ 新台幣 TWD', rate:0.245},
+    {code:'EUR', symbol:'€', label:'€ 歐元 EUR', rate:8.5},
+    {code:'GBP', symbol:'£', label:'£ 英鎊 GBP', rate:9.9},
+    {code:'KRW', symbol:'₩', label:'₩ 韓圜 KRW', rate:0.0058},
+    {code:'THB', symbol:'฿', label:'฿ 泰銖 THB', rate:0.22},
+    {code:'SGD', symbol:'S$', label:'S$ 新加坡元 SGD', rate:5.8},
+    {code:'MOP', symbol:'MOP$', label:'MOP$ 澳門幣 MOP', rate:0.97},
+    {code:'AUD', symbol:'A$', label:'A$ 澳元 AUD', rate:5.2}
+  ];
+  function findCurrency(code){
+    for (var i=0;i<CURRENCY_LIST.length;i++){ if (CURRENCY_LIST[i].code===code) return CURRENCY_LIST[i]; }
+    return CURRENCY_LIST[0];
+  }
+  function currencyOptionsHTML(selectedCode){
+    return CURRENCY_LIST.map(function(c){ return '<option value="'+c.code+'" '+(c.code===selectedCode?'selected':'')+'>'+c.label+'</option>'; }).join('');
+  }
+  function convertToHKD(amount, code){
+    return Math.round((Number(amount)||0) * findCurrency(code).rate);
+  }
+  function formatForeign(amount, code){
+    return findCurrency(code).symbol + Math.round(Number(amount)||0).toLocaleString('en-US');
+  }
+  // pick a sensible default entry currency based on where the trip is —
+  // still just a starting point, the traveller can change it any time.
+  var COUNTRY_DEFAULT_CURRENCY = {
+    '日本':'JPY', '台灣':'TWD', '中國':'CNY', '中國大陸':'CNY', '南韓':'KRW', '韓國':'KRW',
+    '泰國':'THB', '新加坡':'SGD', '美國':'USD', '英國':'GBP', '澳洲':'AUD', '澳門':'MOP'
+  };
+  function defaultCurrencyForTrip(){ return COUNTRY_DEFAULT_CURRENCY[trip.country] || 'HKD'; }
 
   var idSeed = 100;
   function nextId(prefix){ idSeed++; return prefix + idSeed; }
@@ -154,8 +221,14 @@
   // simply reassigns those same variables from a "bundle" — every existing
   // function keeps working unchanged because closures see the reassignment.
 
+  // archivedMembers keeps a light {id -> {id,name,color}} record of members
+  // removed from a trip, so anything that still references their old id
+  // (a past expense's paidBy/participant, a settlement balance) can still
+  // show a real name instead of falling back to the raw internal id.
+  var archivedMembers = {};
+
   var tripsStore = [
-    { id:'trip1', trip:trip, members:members, expenses:expenses, shoppingItems:shoppingItems, candidatePlaces:candidatePlaces, shopCategoryOrder:shopCategoryOrder }
+    { id:'trip1', trip:trip, members:members, expenses:expenses, shoppingItems:shoppingItems, candidatePlaces:candidatePlaces, shopCategoryOrder:shopCategoryOrder, viewerId:viewerId, archivedMembers:archivedMembers }
   ];
   var currentTripId = 'trip1';
 
@@ -165,14 +238,18 @@
     var b = getBundle(currentTripId);
     if (!b) return;
     b.trip = trip; b.members = members; b.expenses = expenses; b.shoppingItems = shoppingItems;
-    b.candidatePlaces = candidatePlaces; b.shopCategoryOrder = shopCategoryOrder;
+    b.candidatePlaces = candidatePlaces; b.shopCategoryOrder = shopCategoryOrder; b.viewerId = viewerId;
+    b.archivedMembers = archivedMembers;
   }
 
   function loadTripIntoGlobals(id){
     var b = getBundle(id);
     if (!b) return;
     trip = b.trip; members = b.members; expenses = b.expenses; shoppingItems = b.shoppingItems;
-    candidatePlaces = b.candidatePlaces; shopCategoryOrder = b.shopCategoryOrder; currentTripId = id;
+    candidatePlaces = b.candidatePlaces; shopCategoryOrder = b.shopCategoryOrder;
+    viewerId = (b.viewerId!==undefined) ? b.viewerId : null;
+    archivedMembers = b.archivedMembers || {};
+    currentTripId = id;
   }
 
   var state = {
@@ -194,7 +271,11 @@
 
   function fmt(n){ n = Math.round(n||0); return 'HK$' + n.toLocaleString('en-US'); }
   function fmtPct(n){ return Math.round(n) + '%'; }
-  function findMember(id){ for (var i=0;i<members.length;i++){ if(members[i].id===id) return members[i]; } return {id:id,name:id,color:'#8B877E'}; }
+  function findMember(id){
+    for (var i=0;i<members.length;i++){ if(members[i].id===id) return members[i]; }
+    if (archivedMembers && archivedMembers[id]) return archivedMembers[id];
+    return {id:id,name:id,color:'#8B877E'};
+  }
   function initials(name){ return name.slice(0,1).toUpperCase(); }
 
   // ---------- per-trip regions (used to place items/candidates on the map grid) ----------
@@ -228,9 +309,31 @@
   function avatarHTML(id, size){
     var m = findMember(id);
     var cls = size==='lg' ? 'avatar lg' : 'avatar';
+    if (m.avatarPhoto){
+      return '<div class="'+cls+'" style="background:'+m.color+';padding:0;overflow:hidden;"><img src="'+m.avatarPhoto+'" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%;"></div>';
+    }
     var content = m.avatarEmoji ? m.avatarEmoji : initials(m.name);
-    var bg = m.avatarEmoji ? 'var(--accent-tint)' : m.color;
+    // the picked colour always applies — an emoji sits on top of it, it never
+    // hides it (previously an emoji forced a fixed tint and made the colour
+    // swatches look like they did nothing once an emoji was chosen)
+    var bg = m.color;
     return '<div class="'+cls+'" style="background:'+bg+';'+(m.avatarEmoji?'font-size:'+(size==='lg'?'20':'15')+'px;':'')+'">'+content+'</div>';
+  }
+
+  // ---------- "everyone wants this" sentinel for shopping-item assignment ----------
+  // shoppingItems[].assignedTo is normally a member id, but a shopper can also
+  // mark an item as wanted by the whole group rather than one specific person —
+  // EVERYONE_ID is that sentinel value. Any place that used to assume
+  // assignedTo was always a real member id goes through these two helpers
+  // instead of findMember()/avatarHTML() directly.
+  var EVERYONE_ID = 'everyone';
+  function assigneeName(id){ return id === EVERYONE_ID ? '大家都想要' : findMember(id).name; }
+  function assigneeAvatarHTML(id, size){
+    if (id === EVERYONE_ID){
+      var cls = size==='lg' ? 'avatar lg' : 'avatar';
+      return '<div class="'+cls+'" style="background:#8B877E;display:flex;align-items:center;justify-content:center;">'+icon('users', size==='lg'?20:14,'#fff')+'</div>';
+    }
+    return avatarHTML(id, size);
   }
 
   function icon(name, size, color){
@@ -255,7 +358,8 @@
       arrowUp:'<path d="M12 19V5M6 11l6-6 6 6"/>',
       arrowDown:'<path d="M12 5v14M6 13l6 6 6-6"/>',
       trash:'<path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/>',
-      drag:'<circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/>'
+      drag:'<circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/>',
+      camera:'<path d="M4 8h3l1.5-2.5h7L17 8h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.6"/>'
     };
     return '<svg width="'+size+'" height="'+size+'" viewBox="0 0 24 24" fill="none" stroke="'+color+'" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(paths[name]||'')+'</svg>';
   }
@@ -612,7 +716,8 @@
       var t = b.trip;
       var started = tripIsStartedFor(t);
       return '<div class="trip-card" data-action="openTrip" data-id="'+b.id+'">' +
-        '<div class="trip-card-cover" style="background:'+THEME_GRADIENTS[t.theme % THEME_GRADIENTS.length]+';">' +
+        '<div class="trip-card-cover" style="'+tripCoverBackgroundCSS(t)+'">' +
+          '<button class="trip-card-cover-edit" data-action="openEditTripCover" data-id="'+b.id+'" title="換個封面相">'+icon('camera',15,'#F7F6F2')+'</button>' +
           '<button class="trip-card-delete" data-action="deleteTrip" data-id="'+b.id+'" title="刪除呢個旅程">'+icon('trash',15,'#F7F6F2')+'</button>' +
           '<span class="trip-card-status">'+(started ? '旅行中' : '籌備中')+'</span>' +
           '<h2>'+t.name+'</h2>' +
@@ -629,7 +734,18 @@
 
   var createTripDraft;
   function freshCreateTripDraft(){
-    return { name:'', country:'', start:'', end:'', budget:'', memberNames:'你' };
+    return { name:'', country:'', start:'', end:'', memberNames:'你', memberBudgets:{} };
+  }
+  function createTripMemberNames(d){
+    var names = d.memberNames.split(/[,，]/).map(function(s){ return s.trim(); }).filter(Boolean);
+    if (!names.length) names = ['你'];
+    return names;
+  }
+  function createTripBudgetRowsHTML(d){
+    return createTripMemberNames(d).map(function(n,i){
+      var v = d.memberBudgets[i]!==undefined ? d.memberBudgets[i] : '';
+      return '<div class="split-row"><div style="flex:1;font-size:13px;">'+n+'</div><input type="number" data-role="ctMemberBudget" data-idx="'+i+'" value="'+v+'" placeholder="0"></div>';
+    }).join('');
   }
   function renderCreateTripModal(){
     if (!createTripDraft) createTripDraft = freshCreateTripDraft();
@@ -644,8 +760,8 @@
         '<div class="field"><label>開始日期</label><input type="date" id="ct-start" value="'+d.start+'"></div>' +
         '<div class="field"><label>結束日期</label><input type="date" id="ct-end" value="'+d.end+'"></div>' +
       '</div>' +
-      '<div class="field"><label>預算</label><input type="number" id="ct-budget" value="'+d.budget+'" placeholder="0"></div>' +
       '<div class="field"><label>團員（用逗號分隔）</label><input type="text" id="ct-members" value="'+d.memberNames+'" placeholder="你, Alex, Chris"></div>' +
+      '<div class="field"><label>每人預算（HK$，每位團員可以唔同，optional）</label><div id="ct-budget-rows">'+createTripBudgetRowsHTML(d)+'</div></div>' +
       '<div class="modal-actions">' +
         '<button class="btn-secondary" data-action="closeModal">取消</button>' +
         '<button class="btn-primary" data-action="submitCreateTrip">建立旅程</button>' +
@@ -655,40 +771,50 @@
     var d = createTripDraft;
     var g = function(id){ var el = document.getElementById(id); return el ? el.value : ''; };
     d.name = g('ct-name'); d.country = g('ct-country'); d.start = g('ct-start'); d.end = g('ct-end');
-    d.budget = g('ct-budget'); d.memberNames = g('ct-members');
+    d.memberNames = g('ct-members');
   }
   function submitCreateTrip(){
     syncCreateTripDraftFromDOM();
     var d = createTripDraft;
     if (!d.name || !d.start || !d.end){ showAlert('請輸入目的地同旅程日期。'); return; }
-    var names = d.memberNames.split(/[,，]/).map(function(s){ return s.trim(); }).filter(Boolean);
-    if (!names.length) names = ['你'];
+    var names = createTripMemberNames(d);
+    var budgetInputs = document.querySelectorAll('[data-role="ctMemberBudget"]');
+    var budgetsByIdx = {};
+    for (var bi=0; bi<budgetInputs.length; bi++){ budgetsByIdx[budgetInputs[bi].getAttribute('data-idx')] = budgetInputs[bi].value; }
     var newMembers = names.map(function(n, i){
-      return { id:'m'+nextId(''), name:n, color:AVATAR_COLORS[i % AVATAR_COLORS.length], avatarEmoji:null };
+      return { id:'m'+nextId(''), name:n, color:AVATAR_COLORS[i % AVATAR_COLORS.length], avatarEmoji:null, avatarPhoto:null, budget:Number(budgetsByIdx[i])||0 };
     });
+    var totalBudget = newMembers.reduce(function(s,m){ return s+m.budget; }, 0);
     var dayCount = Math.max(1, Math.round((new Date(d.end) - new Date(d.start)) / 86400000) + 1);
     var newDays = [];
     for (var i=0;i<dayCount;i++){
       var dt = new Date(d.start); dt.setDate(dt.getDate()+i);
-      newDays.push({ date: dt.toISOString().slice(0,10), weather:{temp:'--', condition:'未知'}, items:[] });
+      newDays.push({ date: dt.toISOString().slice(0,10), items:[] });
     }
     var newTrip = {
       theme: tripsStore.length % THEME_GRADIENTS.length,
-      name: d.name, country: d.country, start: d.start, end: d.end, budget: Number(d.budget)||0,
+      coverPhoto: null,
+      coverColor: null,
+      name: d.name, country: d.country, start: d.start, end: d.end, budget: totalBudget,
       stats:{days:dayCount, attractions:0, bookings:0, savedPlaces:0},
       todayPlan:[], nextItem:{time:'--:--', title:'未有安排', distance:'—'},
       staticChecklist:[{label:'航班', done:false},{label:'酒店', done:false},{label:'餐廳預訂', done:false},{label:'行李清單', done:false}],
       leaderboardEnabled:true,
+      hotels:[],
       regions:[{name:'市中心', loc:{x:50,y:50}}],
       days:newDays
     };
-    var newBundle = { id:'t'+nextId(''), trip:newTrip, members:newMembers, expenses:[], shoppingItems:[], candidatePlaces:[], shopCategoryOrder:['必需品','衣物','藥物','食物','旅程用品'] };
+    // no viewer picked yet for this brand-new trip — the "揀返你自己" prompt
+    // fires the moment we enter it (same as any pre-existing trip that has
+    // never had a viewer chosen), scoped to just this trip's own member list.
+    var newBundle = { id:'t'+nextId(''), trip:newTrip, members:newMembers, expenses:[], shoppingItems:[], candidatePlaces:[], shopCategoryOrder:['必需品','衣物','藥物','食物','旅程用品'], viewerId:null, archivedMembers:{} };
     tripsStore.push(newBundle);
     loadTripIntoGlobals(newBundle.id);
     state.screen = 'trip'; state.tab = 'dashboard'; state.itineraryDayIndex = 0;
     createTripDraft = null;
     markDirty();
-    closeModal();
+    if (!viewerId || !memberExists(viewerId)) openModal('pickViewer', {mustPick:true});
+    else closeModal();
   }
 
   // ---------- member avatar customization ----------
@@ -697,58 +823,107 @@
   function renderEditMemberModal(memberId){
     var m = findMember(memberId);
     if (!editMemberDraft || editMemberDraft.id !== memberId){
-      editMemberDraft = { id:memberId, emoji:m.avatarEmoji, color:m.color };
+      editMemberDraft = { id:memberId, emoji:m.avatarEmoji, color:m.color, photo:m.avatarPhoto||null, budget: (m.budget!==undefined && m.budget!==null) ? m.budget : '' };
     }
     var d = editMemberDraft;
-    var previewMember = { id:'preview', name:m.name, color:d.color, avatarEmoji:d.emoji };
+    var previewMember = { id:'preview', name:m.name, color:d.color, avatarEmoji:d.emoji, avatarPhoto:d.photo };
     return '' +
       '<div class="sheet-handle"></div>' +
       '<span class="close-x" data-action="closeModal">'+icon('close',20)+'</span>' +
       '<div class="sheet-title">自訂 '+m.name+' 嘅圖示</div>' +
       '<div class="avatar-preview-row">'+avatarPreviewHTML(previewMember)+'</div>' +
+      '<div class="field"><label>上載自己嘅相片（optional）</label><input type="file" id="em-photo" accept="image/*"></div>' +
+      (d.photo ? '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:14px;" data-action="clearMemberPhoto">移除相片</button>' : '') +
       '<div class="field"><label>顏色</label><div class="color-swatch-row">' +
         AVATAR_COLORS.map(function(c){ return '<div class="color-swatch '+(d.color===c?'selected':'')+'" style="background:'+c+';" data-action="setMemberColor" data-color="'+c+'"></div>'; }).join('') +
       '</div></div>' +
-      '<div class="field"><label>表情符號（optional，揀咗就會取代顏色底頭像）</label><div class="emoji-grid">' +
+      '<div class="field"><label>表情符號（optional，冇上載相片先會顯示；會擺喺你揀嘅顏色底上）</label><div class="emoji-grid">' +
         AVATAR_EMOJI_CHOICES.map(function(e){ return '<div class="emoji-opt '+(d.emoji===e?'selected':'')+'" data-action="setMemberEmoji" data-emoji="'+e+'">'+e+'</div>'; }).join('') +
       '</div></div>' +
+      '<div class="field"><label>個人預算（HK$，optional）</label><input type="number" id="em-budget" value="'+d.budget+'" placeholder="0"></div>' +
+      '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:14px;color:var(--negative);" data-action="deleteMember" data-id="'+m.id+'">剷除呢位團員</button>' +
       '<div class="modal-actions">' +
         '<button class="btn-secondary" data-action="clearMemberEmoji">移除表情符號</button>' +
         '<button class="btn-primary" data-action="submitEditMember">儲存</button>' +
       '</div>';
   }
   function avatarPreviewHTML(m){
+    if (m.avatarPhoto){
+      return '<div class="avatar" style="width:64px;height:64px;background:'+m.color+';padding:0;overflow:hidden;"><img src="'+m.avatarPhoto+'" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%;"></div>';
+    }
     var content = m.avatarEmoji ? m.avatarEmoji : initials(m.name);
-    var bg = m.avatarEmoji ? 'var(--accent-tint)' : m.color;
+    var bg = m.color;
     return '<div class="avatar" style="width:64px;height:64px;font-size:'+(m.avatarEmoji?'30':'20')+'px;background:'+bg+';">'+content+'</div>';
+  }
+  // reads an uploaded photo, crops it to a square and downsizes it so the
+  // shared/published state stays small — this all happens locally in the
+  // browser (FileReader + canvas), no upload to any server involved.
+  function readAndResizeImageFile(file, callback, opts){
+    // opts lets a caller ask for a non-square crop (e.g. a wide trip-cover
+    // banner) instead of the default square avatar thumbnail — omitting it
+    // keeps the original 128x128 centre-crop behaviour unchanged.
+    opts = opts || {};
+    var W = opts.width || 128, H = opts.height || W;
+    var quality = opts.quality || 0.72;
+    if (!file || !window.FileReader){ showAlert('呢部裝置未能讀取相片。'); return; }
+    var reader = new FileReader();
+    reader.onload = function(ev){
+      var img = new Image();
+      img.onload = function(){
+        var canvas = document.createElement('canvas');
+        canvas.width = W; canvas.height = H;
+        var ctx = canvas.getContext('2d');
+        // centre-crop the source to match the target aspect ratio, then scale to fit
+        var targetRatio = W / H, srcRatio = img.width / img.height;
+        var sx, sy, sw, sh;
+        if (srcRatio > targetRatio){ sh = img.height; sw = sh * targetRatio; sx = (img.width - sw)/2; sy = 0; }
+        else { sw = img.width; sh = sw / targetRatio; sx = 0; sy = (img.height - sh)/2; }
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, W, H);
+        var dataUrl;
+        try { dataUrl = canvas.toDataURL('image/jpeg', quality); }
+        catch(err){ showAlert('呢張相未能處理，請試試另一張。'); return; }
+        callback(dataUrl);
+      };
+      img.onerror = function(){ showAlert('呢張相未能讀取，請試試另一張。'); };
+      img.src = ev.target.result;
+    };
+    reader.onerror = function(){ showAlert('讀取檔案失敗，請再試一次。'); };
+    reader.readAsDataURL(file);
   }
   function submitEditMember(){
     var m = findMember(editMemberDraft.id);
+    var budgetEl = document.getElementById('em-budget');
+    if (budgetEl) editMemberDraft.budget = budgetEl.value;
     m.color = editMemberDraft.color;
     m.avatarEmoji = editMemberDraft.emoji;
+    m.avatarPhoto = editMemberDraft.photo || null;
+    m.budget = Number(editMemberDraft.budget)||0;
     editMemberDraft = null;
     markDirty();
     closeModal();
   }
 
   var addMemberDraft;
-  function freshAddMemberDraft(){ return { name:'', color: AVATAR_COLORS[members.length % AVATAR_COLORS.length], emoji:null }; }
+  function freshAddMemberDraft(){ return { name:'', color: AVATAR_COLORS[members.length % AVATAR_COLORS.length], emoji:null, photo:null, budget:'', becomeViewer:false }; }
   function renderAddMemberModal(){
     if (!addMemberDraft) addMemberDraft = freshAddMemberDraft();
     var d = addMemberDraft;
-    var previewMember = { id:'preview', name:d.name||'新團員', color:d.color, avatarEmoji:d.emoji };
+    var previewMember = { id:'preview', name:d.name||'新團員', color:d.color, avatarEmoji:d.emoji, avatarPhoto:d.photo };
     return '' +
       '<div class="sheet-handle"></div>' +
       '<span class="close-x" data-action="closeModal">'+icon('close',20)+'</span>' +
-      '<div class="sheet-title">加入團員</div>' +
+      '<div class="sheet-title">'+(d.becomeViewer ? '新增自己' : '加入團員')+'</div>' +
       '<div class="avatar-preview-row">'+avatarPreviewHTML(previewMember)+'</div>' +
       '<div class="field"><label>名稱</label><input type="text" id="am-name" value="'+d.name+'" placeholder="例如：Jamie"></div>' +
+      '<div class="field"><label>上載自己嘅相片（optional）</label><input type="file" id="am-photo" accept="image/*"></div>' +
+      (d.photo ? '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:14px;" data-action="clearNewMemberPhoto">移除相片</button>' : '') +
       '<div class="field"><label>顏色</label><div class="color-swatch-row">' +
         AVATAR_COLORS.map(function(c){ return '<div class="color-swatch '+(d.color===c?'selected':'')+'" style="background:'+c+';" data-action="setNewMemberColor" data-color="'+c+'"></div>'; }).join('') +
       '</div></div>' +
-      '<div class="field"><label>表情符號（optional）</label><div class="emoji-grid">' +
+      '<div class="field"><label>表情符號（optional，冇上載相片先會顯示）</label><div class="emoji-grid">' +
         AVATAR_EMOJI_CHOICES.map(function(e){ return '<div class="emoji-opt '+(d.emoji===e?'selected':'')+'" data-action="setNewMemberEmoji" data-emoji="'+e+'">'+e+'</div>'; }).join('') +
       '</div></div>' +
+      '<div class="field"><label>個人預算（HK$，optional）</label><input type="number" id="am-budget" value="'+d.budget+'" placeholder="0"></div>' +
       '<div class="modal-actions">' +
         '<button class="btn-secondary" data-action="closeModal">取消</button>' +
         '<button class="btn-primary" data-action="submitAddMember">加入</button>' +
@@ -756,15 +931,37 @@
   }
   function syncAddMemberDraftFromDOM(){
     var n = document.getElementById('am-name'); if (n) addMemberDraft.name = n.value;
+    var b = document.getElementById('am-budget'); if (b) addMemberDraft.budget = b.value;
   }
   function submitAddMember(){
     syncAddMemberDraftFromDOM();
     var d = addMemberDraft;
     if (!d.name){ showAlert('請輸入名稱。'); return; }
-    members.push({ id:'m'+nextId(''), name:d.name, color:d.color, avatarEmoji:d.emoji });
+    var newMember = { id:'m'+nextId(''), name:d.name, color:d.color, avatarEmoji:d.emoji, avatarPhoto:d.photo||null, budget:Number(d.budget)||0 };
+    members.push(newMember);
+    if (d.becomeViewer) viewerId = newMember.id;
     addMemberDraft = null;
     markDirty();
     closeModal();
+  }
+
+  // ---------- "which member are you?" — picked per trip, so switching trips
+  // (or a trip whose member list is different) always asks again if unset ----------
+
+  function renderPickViewerModal(payload){
+    var mustPick = !!(payload && payload.mustPick);
+    return '' +
+      '<div class="sheet-handle"></div>' +
+      (mustPick ? '' : '<span class="close-x" data-action="closeModal">'+icon('close',20)+'</span>') +
+      '<div class="sheet-title">你係邊位？</div>' +
+      '<div class="hint" style="color:var(--muted);margin:-8px 0 14px 0;">呢個係呢個旅程入面嘅團員名單 —— 揀返你自己，就可以睇返你嘅個人預算同結餘。</div>' +
+      '<div class="member-pick" style="flex-direction:column;gap:8px;">' +
+        members.map(function(m){
+          return '<div class="member-chip '+(viewerId===m.id?'selected':'')+'" style="justify-content:flex-start;padding:10px 14px;" data-action="selectViewer" data-id="'+m.id+'">'+avatarHTML(m.id)+'<span style="font-size:14px;">'+m.name+'</span></div>';
+        }).join('') +
+      '</div>' +
+      '<button type="button" class="btn-secondary" style="width:100%;margin-top:14px;" data-action="openAddMemberFromPicker">＋ 我唔喺呢度，新增自己</button>' +
+      (mustPick ? '' : '<div class="modal-actions" style="margin-top:14px;"><button class="btn-secondary" data-action="closeModal">取消</button></div>');
   }
 
   // ---------- render: dashboard ----------
@@ -787,9 +984,11 @@
     var html = '';
 
     // hero
-    html += '<div class="dash-hero" style="background:'+THEME_GRADIENTS[trip.theme % THEME_GRADIENTS.length]+';">' +
+    var viewerMember = (viewerId && memberExists(viewerId)) ? findMember(viewerId) : null;
+    html += '<div class="dash-hero" style="'+tripCoverBackgroundCSS(trip)+'">' +
       '<div class="dash-hero-top">' +
         '<button class="back-btn" data-action="goHome" title="返回旅程列表">'+icon('chevronLeft',20,'#F7F6F2')+'</button>' +
+        '<button class="status-pill" style="border:none;cursor:pointer;" data-action="openPickViewer" title="轉換身份">'+(viewerMember?('你係 '+viewerMember.name+' · 轉換'):'揀返你自己')+'</button>' +
         '<span class="status-pill">'+(started ? '旅行中' : '籌備中')+'</span>' +
       '</div>' +
       '<h1>'+trip.name+'</h1>' +
@@ -800,14 +999,39 @@
       '</div>' +
     '</div>';
 
-    // lean stats row
+    // lean stats row — shows the viewer's own personal budget/remaining when
+    // one has been picked, since everyone's personal budget can differ,
+    // rather than only the whole-group total.
+    var viewerBudget = viewerMember ? (viewerMember.budget||0) : trip.budget;
+    var viewerRemaining = viewerMember ? (viewerBudget - memberSpendShare(viewerMember.id)) : remaining;
     html += '<div class="section">' +
       '<div class="stat-row-lean">' +
         leanStat(trip.stats.days+' 日', '旅程') +
         leanStat(members.length+' 人', '團員') +
-        leanStat(fmt(trip.budget), '預算', true) +
-        leanStat(fmt(remaining), '剩餘', true) +
+        leanStat(fmt(viewerBudget), viewerMember?'你嘅預算':'預算', true) +
+        leanStat(fmt(viewerRemaining), viewerMember?'你剩餘':'剩餘', true) +
       '</div>' +
+    '</div>';
+
+    // accommodation — small section, supports multiple hotel/stay entries for
+    // multi-city trips
+    var hotels = trip.hotels || [];
+    html += '<div class="section">' +
+      '<div class="section-title"><h2>住宿</h2><button class="link-btn" data-action="openAddHotel">＋新增酒店</button></div>' +
+      (hotels.length ?
+        '<div class="card" style="padding:6px 14px;">' +
+        hotels.map(function(h, hIdx){
+          return '<div class="checklist-row" style="cursor:pointer;align-items:flex-start;padding:10px 0;" data-action="openEditHotel" data-id="'+h.id+'">' +
+            '<div style="margin-top:1px;">'+icon('calendar',16,'#8B877E')+'</div>' +
+            '<div style="flex:1;">' +
+              '<div style="font-size:13.5px;font-weight:600;">'+h.name+'</div>' +
+              '<div style="font-size:11.5px;color:var(--muted);margin-top:2px;" class="num">'+(h.checkIn||'—')+' → '+(h.checkOut||'—')+'</div>' +
+              (h.notes ? ('<div style="font-size:11.5px;color:var(--muted);margin-top:1px;">'+h.notes+'</div>') : '') +
+            '</div>' +
+          '</div>' + (hIdx < hotels.length-1 ? '<div style="height:1px;background:var(--line);"></div>' : '');
+        }).join('') +
+        '</div>'
+        : '<div class="card" style="padding:16px;font-size:12.5px;color:var(--muted);">未有酒店紀錄，撳右上角新增。</div>') +
     '</div>';
 
     // trip progress checklist
@@ -869,20 +1093,26 @@
 
     // group balance
     html += '<div class="section">' +
-      '<div class="section-title"><h2>團員結餘</h2><button class="link-btn" data-action="setTab" data-key="expenses">查看結算</button></div>' +
+      '<div class="section-title"><h2>團員結餘</h2><button class="link-btn" data-action="openAddMember">＋加入團員</button></div>' +
       '<div class="card" style="padding:6px 14px;">' +
       members.map(function(m){
         var b = Math.round(bal[m.id]||0);
         var pillClass = b>0.5 ? 'balance-pos' : (b<-0.5 ? 'balance-neg' : 'balance-zero');
         var pillLabel = b>0.5 ? ('應收 '+fmt(b)) : (b<-0.5 ? ('應付 '+fmt(-b)) : '已結清');
+        var isViewer = viewerId===m.id;
+        var memberRemaining = (m.budget||0) - memberSpendShare(m.id);
         return '<div class="balance-row">' +
           '<div class="avatar-editable" data-action="openEditMember" data-id="'+m.id+'">'+avatarHTML(m.id)+'</div>' +
-          '<div style="flex:1;font-size:13.5px;font-weight:600;">'+m.name+'</div>' +
+          '<div style="flex:1;">' +
+            '<div style="font-size:13.5px;font-weight:600;">'+m.name+(isViewer?' <span style="color:var(--accent);font-weight:700;">（你）</span>':'')+'</div>' +
+            (m.budget ? ('<div style="font-size:10.5px;color:var(--muted);margin-top:1px;">預算 '+fmt(m.budget)+' · 剩餘 '+fmt(memberRemaining)+'</div>') : '') +
+          '</div>' +
           '<div class="balance-pill '+pillClass+'">'+pillLabel+'</div>' +
         '</div>';
       }).join('') +
       '</div>' +
       renderSettlementHeadline(plan) +
+      '<div style="text-align:right;margin-top:8px;"><button class="link-btn" data-action="setTab" data-key="expenses">查看結算</button></div>' +
     '</div>';
 
     // to buy summary
@@ -913,6 +1143,7 @@
         '<button class="qa-btn" data-action="openAddShopping">'+icon('plus',16)+'新增購物項目</button>' +
         '<button class="qa-btn" data-action="openAddItineraryItem">'+icon('plus',16)+'新增行程</button>' +
         '<button class="qa-btn" data-action="openAddMember">'+icon('plus',16)+'加入團員</button>' +
+        '<button class="qa-btn" data-action="exportTripSummary">'+icon('receipt',16)+'匯出行程總結</button>' +
       '</div>' +
     '</div>';
 
@@ -990,19 +1221,250 @@
       '<div class="status-dot '+item.status+'">'+(item.status==='purchased'?icon('check',12,'#fff'):'')+'</div>' +
       '<div style="flex:1;">' +
         '<div class="name">'+item.name+'</div>' +
-        '<div class="meta">'+priceLine+' · 負責 '+findMember(item.assignedTo).name+'</div>' +
+        '<div class="meta">'+priceLine+' · 負責 '+assigneeName(item.assignedTo)+'</div>' +
       '</div>' +
-      avatarHTML(item.assignedTo) +
+      assigneeAvatarHTML(item.assignedTo) +
     '</div>';
   }
 
-  // ---------- render: itinerary ----------
-
-  function weatherIcon(condition, size){
-    if (condition==='晴') return icon('sun', size||16, '#B8863F');
-    if (condition==='陣雨') return icon('rain', size||16, '#4C7A94');
-    return icon('cloud', size||16, '#8B877E');
+  // ---------- render: accommodation (hotels) ----------
+  // trip.hotels is an array so a multi-city trip can hold several stays; the
+  // same modal handles both adding a new one and editing an existing one
+  // (hotelDraft.id is null for "new", or the hotel's id for "edit").
+  var hotelDraft;
+  function freshHotelDraft(existing){
+    if (existing) return {id:existing.id, name:existing.name, checkIn:existing.checkIn||'', checkOut:existing.checkOut||'', notes:existing.notes||''};
+    return {id:null, name:'', checkIn:'', checkOut:'', notes:''};
   }
+  function renderHotelModal(){
+    if (!hotelDraft) hotelDraft = freshHotelDraft();
+    var d = hotelDraft;
+    return '' +
+      '<div class="sheet-handle"></div>' +
+      '<span class="close-x" data-action="closeModal">'+icon('close',20)+'</span>' +
+      '<div class="sheet-title">'+(d.id?'編輯酒店':'新增酒店')+'</div>' +
+      '<div class="field"><label>酒店名稱</label><input type="text" id="hf-name" value="'+d.name+'" placeholder="例如：東京銀座格拉斯麗酒店"></div>' +
+      '<div class="row-2">' +
+        '<div class="field"><label>入住日期</label><input type="date" id="hf-checkin" value="'+d.checkIn+'"></div>' +
+        '<div class="field"><label>退房日期</label><input type="date" id="hf-checkout" value="'+d.checkOut+'"></div>' +
+      '</div>' +
+      '<div class="field"><label>備註（optional）</label><textarea id="hf-notes">'+d.notes+'</textarea></div>' +
+      (d.name ? googleMapsSearchLinkHTML(d.name) : '') +
+      '<div class="modal-actions">' +
+        (d.id ? ('<button class="btn-secondary" data-action="deleteHotel" data-id="'+d.id+'" style="color:var(--negative);">刪除</button>') : '<button class="btn-secondary" data-action="closeModal">取消</button>') +
+        '<button class="btn-primary" data-action="submitHotel">'+(d.id?'儲存':'加入')+'</button>' +
+      '</div>';
+  }
+  function syncHotelDraftFromDOM(){
+    var d = hotelDraft;
+    var n = document.getElementById('hf-name'); if (n) d.name = n.value;
+    var ci = document.getElementById('hf-checkin'); if (ci) d.checkIn = ci.value;
+    var co = document.getElementById('hf-checkout'); if (co) d.checkOut = co.value;
+    var no = document.getElementById('hf-notes'); if (no) d.notes = no.value;
+  }
+  function submitHotel(){
+    syncHotelDraftFromDOM();
+    var d = hotelDraft;
+    if (!d.name){ showAlert('請輸入酒店名稱。'); return; }
+    if (!trip.hotels) trip.hotels = [];
+    if (d.id){
+      var existing = trip.hotels.filter(function(h){ return h.id===d.id; })[0];
+      if (existing){ existing.name=d.name; existing.checkIn=d.checkIn; existing.checkOut=d.checkOut; existing.notes=d.notes; }
+    } else {
+      trip.hotels.push({id:nextId('h'), name:d.name, checkIn:d.checkIn, checkOut:d.checkOut, notes:d.notes});
+    }
+    hotelDraft = null;
+    markDirty();
+    closeModal();
+  }
+
+  // ---------- render: trip cover photo (home-screen "folder" cover) ----------
+  // lets someone upload their own photo as a trip's cover, same idea as an
+  // avatar photo — shown behind the trip-card on the home list AND the
+  // dashboard hero once opened, falling back to the theme gradient when
+  // no photo has been set (or it's been removed).
+  var tripCoverDraft; // {tripId, photo, color}
+  function renderEditTripCoverModal(payload){
+    var b = getBundleFrom(tripsStore, payload.tripId);
+    if (!b) return '';
+    if (!tripCoverDraft || tripCoverDraft.tripId !== payload.tripId){
+      tripCoverDraft = { tripId: payload.tripId, photo: b.trip.coverPhoto || null, color: b.trip.coverColor || null };
+    }
+    var d = tripCoverDraft;
+    var previewCss = d.photo
+      ? ('background:center/cover no-repeat url(\''+d.photo+'\');')
+      : (d.color ? ('background:'+d.color+';') : ('background:'+THEME_GRADIENTS[b.trip.theme % THEME_GRADIENTS.length]+';'));
+    return '' +
+      '<div class="sheet-handle"></div>' +
+      '<span class="close-x" data-action="closeModal">'+icon('close',20)+'</span>' +
+      '<div class="sheet-title">換個封面</div>' +
+      '<div style="width:100%;height:120px;border-radius:14px;margin-bottom:14px;'+previewCss+'"></div>' +
+      '<div class="field"><label>上載相片</label><input type="file" id="tc-photo" accept="image/*"></div>' +
+      '<div class="field"><label>撳唔到相？揀個顏色做背景</label><div class="color-swatch-row">' +
+        AVATAR_COLORS.map(function(c){ return '<div class="color-swatch '+(!d.photo && d.color===c?'selected':'')+'" style="background:'+c+';" data-action="setTripCoverColor" data-color="'+c+'"></div>'; }).join('') +
+      '</div></div>' +
+      ((d.photo || d.color) ? '<button class="btn-secondary" data-action="clearTripCoverPhoto" style="margin-bottom:10px;width:100%;">移除相片／顏色，改用預設背景</button>' : '') +
+      '<div class="modal-actions">' +
+        '<button class="btn-secondary" data-action="closeModal">取消</button>' +
+        '<button class="btn-primary" data-action="submitTripCover">儲存</button>' +
+      '</div>';
+  }
+  function submitTripCover(){
+    if (!tripCoverDraft) return;
+    var b = getBundleFrom(tripsStore, tripCoverDraft.tripId);
+    if (b){ b.trip.coverPhoto = tripCoverDraft.photo || null; b.trip.coverColor = tripCoverDraft.color || null; }
+    tripCoverDraft = null;
+    markDirty();
+    closeModal();
+  }
+
+  // ---------- export: standalone trip-summary HTML ----------
+  // Generates one self-contained, static HTML page (no app logic, nothing to
+  // click) summarising the CURRENTLY OPEN trip — cover, members, hotels,
+  // day-by-day itinerary, wishlist, spend breakdown and settlement — good
+  // for printing or sending to people who aren't using the app themselves.
+  function downloadTextFile(filename, content, mime){
+    try {
+      var blob = new Blob([content], {type: mime || 'text/html;charset=utf-8'});
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+    } catch(err){
+      showAlert('匯出失敗，呢個瀏覽器環境可能唔支援自動下載。');
+    }
+  }
+  var SUMMARY_CSS = '' +
+    ':root{--bg:#F7F6F2;--surface:#FFFFFF;--ink:#171717;--muted:#7A7770;--line:#E8E5DC;--accent:#556052;--accent-tint:#E4E9DF;}' +
+    '@media (prefers-color-scheme: dark){:root{--bg:#1B1A16;--surface:#242320;--ink:#F1EFE8;--muted:#A6A196;--line:#38362E;--accent:#93AB86;--accent-tint:#2E3629;}}' +
+    '*{box-sizing:border-box;}' +
+    'body{margin:0;background:var(--bg);color:var(--ink);font-family:"Manrope","Noto Sans TC",-apple-system,sans-serif;line-height:1.55;}' +
+    'h1,h2{font-family:"Fraunces","Noto Serif TC",serif;margin:0;letter-spacing:-0.01em;}' +
+    '.num{font-variant-numeric:tabular-nums;}' +
+    '.cover{padding:48px 24px 30px 24px;color:#F7F6F2;}' +
+    '.cover h1{font-size:28px;}' +
+    '.badge{display:inline-block;font-size:11px;font-weight:700;letter-spacing:0.05em;background:rgba(255,255,255,0.2);padding:4px 12px;border-radius:999px;margin-bottom:10px;}' +
+    '.cover .sub{font-size:13.5px;margin-top:8px;opacity:0.92;}' +
+    '.wrap{max-width:720px;margin:0 auto;padding:28px 20px 60px 20px;}' +
+    'section{margin-bottom:30px;}' +
+    'section h2{font-size:18px;margin-bottom:14px;}' +
+    '.card,.member-row,.hotel-card,.day-block,.cand-card{background:var(--surface);border:1px solid var(--line);border-radius:14px;}' +
+    '.member-grid{display:flex;flex-wrap:wrap;gap:10px;}' +
+    '.member-row{display:flex;align-items:center;gap:10px;padding:10px 14px;flex:1 1 200px;}' +
+    '.member-row .dot{width:28px;height:28px;border-radius:50%;flex-shrink:0;}' +
+    '.member-row .mname{font-weight:600;font-size:13.5px;flex:1;}' +
+    '.member-row .mbudget{font-size:11.5px;color:var(--muted);}' +
+    '.hotel-grid{display:flex;flex-direction:column;gap:10px;}' +
+    '.hotel-card{padding:14px;}' +
+    '.hname{font-weight:700;font-size:14px;}' +
+    '.hdates{font-size:12px;color:var(--muted);margin-top:3px;}' +
+    '.hnotes{font-size:12px;color:var(--muted);margin-top:3px;}' +
+    '.hotel-card a{display:inline-block;margin-top:8px;font-size:12px;color:var(--accent);text-decoration:none;}' +
+    '.day-block{padding:14px 16px;margin-bottom:10px;}' +
+    '.day-head{font-weight:700;font-size:13.5px;margin-bottom:8px;color:var(--accent);}' +
+    '.itin-row{display:flex;gap:10px;padding:5px 0;font-size:13px;border-top:1px solid var(--line);}' +
+    '.itin-row:first-of-type{border-top:none;}' +
+    '.itime{width:48px;flex-shrink:0;color:var(--muted);}' +
+    '.ititle{flex:1;}' +
+    '.icat{font-size:11px;color:var(--muted);background:var(--accent-tint);padding:2px 8px;border-radius:999px;height:fit-content;}' +
+    '.cand-grid{display:flex;flex-direction:column;gap:10px;}' +
+    '.cand-card{padding:12px 14px;}' +
+    '.cname{font-weight:700;font-size:13.5px;}' +
+    '.cmeta{font-size:11.5px;color:var(--muted);margin-top:2px;}' +
+    '.cnotes{font-size:12px;margin-top:4px;}' +
+    '.cand-card a{display:inline-block;margin-top:6px;font-size:12px;color:var(--accent);text-decoration:none;}' +
+    '.stat-line{display:flex;justify-content:space-between;font-size:14px;padding:6px 0;}' +
+    '.cat-rows{margin-top:8px;border-top:1px solid var(--line);padding-top:8px;}' +
+    '.row{display:flex;justify-content:space-between;font-size:13px;padding:5px 0;}' +
+    '.empty-note{font-size:12.5px;color:var(--muted);}' +
+    '.footer{text-align:center;font-size:11px;color:var(--muted);margin-top:40px;}';
+
+  function generateTripSummaryHTML(){
+    var coverCss = tripCoverBackgroundCSS(trip);
+    var cats = categoryBreakdown();
+    var spend = totalSpend();
+    var plan = settlementPlan();
+
+    var catRowsHTML = cats.map(function(c){
+      return '<div class="row"><span>'+c.category+'</span><span class="num">'+fmt(c.amount)+'</span></div>';
+    }).join('') || '<div class="empty-note">未有任何支出紀錄。</div>';
+
+    var memberRowsHTML = members.map(function(m){
+      return '<div class="member-row">' +
+        '<div class="dot" style="background:'+m.color+';"></div>' +
+        '<div class="mname">'+m.name+'</div>' +
+        (m.budget ? ('<div class="mbudget num">預算 '+fmt(m.budget)+'</div>') : '') +
+      '</div>';
+    }).join('');
+
+    var hotelsHTML = (trip.hotels && trip.hotels.length) ? trip.hotels.map(function(h){
+      return '<div class="hotel-card">' +
+        '<div class="hname">'+h.name+'</div>' +
+        '<div class="hdates num">'+(h.checkIn||'—')+' → '+(h.checkOut||'—')+'</div>' +
+        (h.notes ? ('<div class="hnotes">'+h.notes+'</div>') : '') +
+        googleMapsSearchLinkHTML(h.name) +
+      '</div>';
+    }).join('') : '<div class="empty-note">未有酒店紀錄。</div>';
+
+    var daysHTML = trip.days.map(function(day, idx){
+      var itemsHTML = day.items.length ? day.items.map(function(it){
+        return '<div class="itin-row"><span class="itime num">'+it.time+'</span><span class="ititle">'+it.title+'</span><span class="icat">'+it.category+'</span></div>';
+      }).join('') : '<div class="empty-note">呢日仲未有安排。</div>';
+      return '<div class="day-block">' +
+        '<div class="day-head">第 '+(idx+1)+' 日 · '+formatDayDate(day.date)+'</div>' +
+        itemsHTML +
+      '</div>';
+    }).join('');
+
+    var candidatesHTML = candidatePlaces.map(function(c){
+      return '<div class="cand-card">' +
+        '<div class="cname">'+c.name+'</div>' +
+        '<div class="cmeta">'+c.category+(c.area?(' · '+c.area):'')+'</div>' +
+        (c.notes ? ('<div class="cnotes">'+c.notes+'</div>') : '') +
+        (c.refLink ? ('<a href="'+c.refLink+'" target="_blank" rel="noopener noreferrer">睇返個帖子</a>') : '') +
+      '</div>';
+    }).join('');
+
+    var settlementHTML = plan.length ? plan.map(function(p){
+      return '<div class="row"><span>'+assigneeName(p.from)+' → '+assigneeName(p.to)+'</span><span class="num">'+fmt(p.amount)+'</span></div>';
+    }).join('') : '<div class="empty-note">目前沒有需要結算的款項。</div>';
+
+    return '<!DOCTYPE html>' +
+    '<html lang="zh-Hant"><head><meta charset="UTF-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0">' +
+    '<title>'+trip.name+' 行程總結</title>' +
+    '<link rel="preconnect" href="https://fonts.googleapis.com">' +
+    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>' +
+    '<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Manrope:wght@400;500;600;700;800&family=Noto+Sans+TC:wght@400;500;600;700;800&family=Noto+Serif+TC:wght@600;700&display=swap" rel="stylesheet">' +
+    '<style>'+SUMMARY_CSS+'</style>' +
+    '</head><body>' +
+      '<div class="cover" style="'+coverCss+'">' +
+        '<div class="badge">行程總結</div>' +
+        '<h1>'+trip.name+'</h1>' +
+        '<div class="sub">'+trip.country+' · '+formatRange()+' · '+members.length+' 位旅伴</div>' +
+      '</div>' +
+      '<div class="wrap">' +
+        '<section><h2>團員</h2><div class="member-grid">'+memberRowsHTML+'</div></section>' +
+        '<section><h2>住宿</h2><div class="hotel-grid">'+hotelsHTML+'</div></section>' +
+        '<section><h2>每日行程</h2>'+daysHTML+'</section>' +
+        (candidatePlaces.length ? ('<section><h2>想去清單</h2><div class="cand-grid">'+candidatesHTML+'</div></section>') : '') +
+        '<section><h2>支出概況</h2>' +
+          '<div class="card" style="padding:14px 16px;">' +
+          '<div class="stat-line"><span>總支出</span><span class="num">'+fmt(spend)+'</span></div>' +
+          '<div class="stat-line"><span>預算</span><span class="num">'+fmt(trip.budget)+'</span></div>' +
+          '<div class="cat-rows">'+catRowsHTML+'</div>' +
+          '</div>' +
+        '</section>' +
+        '<section><h2>結算建議</h2><div class="card" style="padding:14px 16px;">'+settlementHTML+'</div></section>' +
+        '<div class="footer">呢份總結由「旅程錢包」喺 '+new Date().toISOString().slice(0,10)+' 匯出。</div>' +
+      '</div>' +
+    '</body></html>';
+  }
+
+  // ---------- render: itinerary ----------
 
   function renderItinerary(){
     var html = '<div class="section" style="padding-top:16px;">' +
@@ -1026,10 +1488,7 @@
           return '<div class="day-chip '+(idx===dayIndex?'active':'')+' '+(allDone?'complete':'')+'" data-action="selectDay" data-idx="'+idx+'"><div class="n">'+(idx+1)+'</div></div>';
         }).join('') +
       '</div>' +
-      '<div class="weather-card">' +
-        '<div>'+formatDayDate(day.date)+'</div>' +
-        '<div style="display:flex;align-items:center;gap:8px;">'+weatherIcon(day.weather.condition)+'<span>'+day.weather.condition+' · '+day.weather.temp+'</span></div>' +
-      '</div>' +
+      '<div class="day-date-card">'+formatDayDate(day.date)+'</div>' +
       '<button class="qa-btn" style="width:100%;justify-content:center;margin-bottom:14px;" data-action="openOptimizeDay">'+icon('route',16)+'AI 智能排序</button>';
 
     if (!day.items.length){
@@ -1083,6 +1542,7 @@
           '<div style="flex:1;">' +
             '<div style="font-size:14px;font-weight:600;">'+c.name+'</div>' +
             '<div style="font-size:11.5px;color:var(--muted);margin-top:2px;">'+c.category+' · '+c.area+(c.addedToDay!==null?(' · 已加入第 '+(c.addedToDay+1)+' 日'):'')+'</div>' +
+            (c.refLink ? ('<a href="'+c.refLink+'" target="_blank" rel="noopener noreferrer" class="link-btn" style="display:inline-flex;align-items:center;gap:4px;margin-top:4px;font-size:11px;">'+icon('route',12)+'睇返個帖子</a>') : '') +
           '</div>' +
           '<button class="move-btn" data-action="deleteCandidate" data-idx="'+idx+'">'+icon('trash',17)+'</button>' +
         '</div>';
@@ -1209,13 +1669,19 @@
       var lastDate = null;
       list.forEach(function(e){
         if (e.date !== lastDate){ html += '<div class="date-heading">'+e.date+'</div>'; lastDate = e.date; }
-        html += '<div class="expense-card">' +
+        html += '<div class="expense-card" data-action="openEditExpense" data-id="'+e.id+'">' +
           '<div class="expense-icon">'+icon('receipt',17)+'</div>' +
           '<div style="flex:1;">' +
             '<div style="font-size:14px;font-weight:600;">'+e.title+'</div>' +
             '<div style="font-size:11.5px;color:var(--muted);margin-top:2px;">'+findMember(e.paidBy).name+' 支付 · '+e.participants.length+' 人分攤 · '+e.category+'</div>' +
           '</div>' +
-          '<div class="num" style="font-size:14px;font-weight:700;">'+fmt(e.amount)+'</div>' +
+          '<div style="text-align:right;">' +
+            (e.currency && e.currency!=='HKD' && e.originalAmount ?
+              ('<div class="num" style="font-size:14px;font-weight:700;">'+formatForeign(e.originalAmount, e.currency)+'</div>' +
+               '<div class="num" style="font-size:10.5px;color:var(--muted);margin-top:2px;">≈ '+fmt(e.amount)+'</div>')
+              : ('<div class="num" style="font-size:14px;font-weight:700;">'+fmt(e.amount)+'</div>')
+            ) +
+          '</div>' +
         '</div>';
       });
     }
@@ -1234,17 +1700,19 @@
     var bal = balances();
     var plan = settlementPlan();
     var html = '<div class="section" style="padding-top:0;">' +
-      '<div class="section-title"><h2>團員結餘</h2></div>' +
+      '<div class="section-title"><h2>團員結餘</h2><button class="link-btn" data-action="openAddMember">＋加入團員</button></div>' +
       '<div class="card" style="padding:6px 14px;margin-bottom:20px;">' +
       members.map(function(m,idx){
         var b = bal[m.id];
         var cls = b>0.5 ? 'balance-pos' : (b<-0.5 ? 'balance-neg' : 'balance-zero');
         var label = b>0.5 ? '應收 '+fmt(b) : (b<-0.5 ? '應付 '+fmt(-b) : '已結清');
+        var isViewer = viewerId===m.id;
+        var memberRemaining = (m.budget||0) - memberSpendShare(m.id);
         return '<div style="display:flex;align-items:center;gap:10px;padding:12px 0;'+(idx>0?'border-top:1px solid var(--line);':'')+'">' +
           '<div class="avatar-editable" data-action="openEditMember" data-id="'+m.id+'">'+avatarHTML(m.id,'lg')+'</div>' +
           '<div style="flex:1;">' +
-            '<div style="font-size:14px;font-weight:600;">'+m.name+'</div>' +
-            '<div style="font-size:11.5px;color:var(--muted);">已支付 <span class="num">'+fmt(memberPaidTotal(m.id))+'</span></div>' +
+            '<div style="font-size:14px;font-weight:600;">'+m.name+(isViewer?' <span style="color:var(--accent);font-weight:700;">（你）</span>':'')+'</div>' +
+            '<div style="font-size:11.5px;color:var(--muted);">已支付 <span class="num">'+fmt(memberPaidTotal(m.id))+'</span>'+(m.budget?(' · 預算 <span class="num">'+fmt(m.budget)+'</span> · 剩餘 <span class="num">'+fmt(memberRemaining)+'</span>'):'')+'</div>' +
           '</div>' +
           '<div class="balance-pill '+cls+'">'+label+'</div>' +
         '</div>';
@@ -1357,6 +1825,9 @@
     else if (state.modal.type === 'createTrip') sheetHTML = renderCreateTripModal();
     else if (state.modal.type === 'editMember') sheetHTML = renderEditMemberModal(state.modal.payload.memberId);
     else if (state.modal.type === 'addMember') sheetHTML = renderAddMemberModal();
+    else if (state.modal.type === 'pickViewer') sheetHTML = renderPickViewerModal(state.modal.payload);
+    else if (state.modal.type === 'addHotel') sheetHTML = renderHotelModal();
+    else if (state.modal.type === 'editTripCover') sheetHTML = renderEditTripCoverModal(state.modal.payload);
     else if (state.modal.type === 'confirmDialog') sheetHTML = renderConfirmDialogModal(state.modal.payload);
     else if (state.modal.type === 'promptDialog') sheetHTML = renderPromptDialogModal(state.modal.payload);
     else if (state.modal.type === 'alertDialog') sheetHTML = renderAlertDialogModal(state.modal.payload);
@@ -1369,7 +1840,7 @@
   var pendingItemLink = null; // {dayIndex, itemIndex} — set when an expense is created from an itinerary item
   function freshExpenseDraft(prefill){
     var d = {
-      title:'', amount:'', category:'餐飲', paidBy:'you',
+      id:null, title:'', amount:'', category:'餐飲', paidBy:'you', currency: defaultCurrencyForTrip(),
       participants: members.map(function(m){ return m.id; }),
       splitType:'equal', custom:{}, percent:{}, date: new Date().toISOString().slice(0,10), notes:''
     };
@@ -1379,6 +1850,26 @@
       if (prefill.date) d.date = prefill.date;
     }
     return d;
+  }
+  // rebuilds an editable draft from an EXISTING expense record, so the same
+  // modal/submit machinery used for "add" can also save changes back onto it.
+  // amount/custom-split values are converted back into the expense's own
+  // original currency (everything is stored internally in HKD).
+  function expenseDraftFromExisting(e){
+    var currency = e.currency || 'HKD';
+    var rate = findCurrency(currency).rate;
+    var amount = (currency !== 'HKD' && e.originalAmount) ? e.originalAmount : e.amount;
+    var custom = {}, percent = {};
+    if (e.splitType === 'custom' && e.shares){
+      Object.keys(e.shares).forEach(function(id){ custom[id] = Math.round(e.shares[id] / rate); });
+    } else if (e.splitType === 'percentage' && e.shares){
+      Object.keys(e.shares).forEach(function(id){ percent[id] = e.shares[id]; });
+    }
+    return {
+      id: e.id, title: e.title, amount: amount, category: e.category, paidBy: e.paidBy, currency: currency,
+      participants: e.participants.slice(), splitType: e.splitType, custom: custom, percent: percent,
+      date: e.date, notes: e.notes || ''
+    };
   }
 
   function renderExpenseModal(){
@@ -1412,12 +1903,14 @@
     return '' +
       '<div class="sheet-handle"></div>' +
       '<span class="close-x" data-action="closeModal">'+icon('close',20)+'</span>' +
-      '<div class="sheet-title">新增支出</div>' +
+      '<div class="sheet-title">'+(d.id?'編輯支出':'新增支出')+'</div>' +
       '<div class="field"><label>項目</label><input type="text" id="f-title" value="'+d.title+'" placeholder="例如：東京酒店"></div>' +
       '<div class="row-2">' +
         '<div class="field"><label>金額</label><input type="number" id="f-amount" value="'+d.amount+'" placeholder="0"></div>' +
-        '<div class="field"><label>類別</label><select id="f-category">'+expenseCategories.map(function(c){ return '<option '+(c===d.category?'selected':'')+'>'+c+'</option>'; }).join('')+'</select></div>' +
+        '<div class="field"><label>貨幣</label><select id="f-currency">'+currencyOptionsHTML(d.currency)+'</select></div>' +
       '</div>' +
+      (d.currency!=='HKD' ? ('<div class="hint" id="f-currency-hint" style="color:var(--muted);margin:-8px 0 14px 0;">≈ '+fmt(convertToHKD(d.amount, d.currency))+'（參考匯率，非即時）</div>') : '') +
+      '<div class="field"><label>類別</label><select id="f-category">'+expenseCategories.map(function(c){ return '<option '+(c===d.category?'selected':'')+'>'+c+'</option>'; }).join('')+'</select></div>' +
       '<div class="field"><label>日期</label><input type="date" id="f-date" value="'+d.date+'"></div>' +
       '<div class="field"><label>誰付款？</label><div class="member-pick">' +
         members.map(function(m){ return '<div class="member-chip '+(d.paidBy===m.id?'selected':'')+'" data-action="setPaidBy" data-id="'+m.id+'">'+avatarHTML(m.id)+'<span>'+m.name+'</span></div>'; }).join('') +
@@ -1433,8 +1926,8 @@
       '<div class="field">'+splitSection+'</div>' +
       '<div class="field"><label>備註（optional）</label><textarea id="f-notes">'+d.notes+'</textarea></div>' +
       '<div class="modal-actions">' +
-        '<button class="btn-secondary" data-action="closeModal">取消</button>' +
-        '<button class="btn-primary" data-action="submitExpense">加入支出</button>' +
+        (d.id ? '<button class="btn-secondary" data-action="deleteExpense" data-id="'+d.id+'" style="color:var(--negative);">刪除</button>' : '<button class="btn-secondary" data-action="closeModal">取消</button>') +
+        '<button class="btn-primary" data-action="submitExpense">'+(d.id?'儲存':'加入支出')+'</button>' +
       '</div>';
   }
 
@@ -1442,9 +1935,17 @@
     var d = expenseDraft;
     var t = document.getElementById('f-title'); if (t) d.title = t.value;
     var a = document.getElementById('f-amount'); if (a) d.amount = a.value;
+    var cur = document.getElementById('f-currency'); if (cur) d.currency = cur.value;
     var c = document.getElementById('f-category'); if (c) d.category = c.value;
     var dt = document.getElementById('f-date'); if (dt) d.date = dt.value;
     var no = document.getElementById('f-notes'); if (no) d.notes = no.value;
+  }
+  function updateCurrencyHintOnly(){
+    var amtEl = document.getElementById('f-amount');
+    var hintEl = document.getElementById('f-currency-hint');
+    if (amtEl && hintEl && expenseDraft && expenseDraft.currency !== 'HKD'){
+      hintEl.textContent = '≈ ' + fmt(convertToHKD(amtEl.value, expenseDraft.currency)) + '（參考匯率，非即時）';
+    }
   }
 
   var shoppingDraft;
@@ -1467,6 +1968,7 @@
       '<div class="field"><label>類別</label><select id="sf-category">'+allCats.map(function(c){ return '<option '+(c===d.category?'selected':'')+'>'+c+'</option>'; }).join('')+'<option value="__new__">＋ 自訂類別…</option></select></div>' +
       '<div class="field"><label>負責人</label><div class="member-pick">' +
         members.map(function(m){ return '<div class="member-chip '+(d.assignedTo===m.id?'selected':'')+'" data-action="setShopAssignee" data-id="'+m.id+'">'+avatarHTML(m.id)+'<span>'+m.name+'</span></div>'; }).join('') +
+        '<div class="member-chip '+(d.assignedTo===EVERYONE_ID?'selected':'')+'" data-action="setShopAssignee" data-id="'+EVERYONE_ID+'">'+assigneeAvatarHTML(EVERYONE_ID)+'<span>大家都想要</span></div>' +
       '</div></div>' +
       '<div class="field"><label>備註（optional）</label><textarea id="sf-notes">'+d.notes+'</textarea></div>' +
       '<div class="modal-actions">' +
@@ -1491,7 +1993,7 @@
       '<div style="font-size:14px;font-weight:600;margin-bottom:14px;">'+item.name+'</div>' +
       '<div class="field"><label>實際花費</label><input type="number" id="pf-actual" value="'+(item.estimatedPrice||'')+'" placeholder="0"></div>' +
       '<div class="toggle-row" style="margin-top:0;">' +
-        '<span>加入旅程支出（由 '+findMember(item.assignedTo).name+' 支付，全部團員平均分攤）</span>' +
+        '<span>加入旅程支出（'+(item.assignedTo===EVERYONE_ID ? '由你先墊支' : ('由 '+assigneeName(item.assignedTo)+' 支付'))+'，全部團員平均分攤）</span>' +
         '<div class="switch on" data-action="togglePurchaseAddExpense"><div class="knob"></div></div>' +
       '</div>' +
       '<div class="modal-actions" style="margin-top:16px;">' +
@@ -1501,7 +2003,7 @@
   }
 
   function renderItemActionsModal(item){
-    var statusLine = item.status==='purchased' ? ('✓ 已由 '+findMember(item.assignedTo).name+' 購買 · 實際 '+fmt(item.actualPrice)) : (item.status==='not_needed' ? '已標記為不需要' : '待購買');
+    var statusLine = item.status==='purchased' ? ('✓ 已由 '+assigneeName(item.assignedTo)+' 購買 · 實際 '+fmt(item.actualPrice)) : (item.status==='not_needed' ? '已標記為不需要' : '待購買');
     return '' +
       '<div class="sheet-handle"></div>' +
       '<span class="close-x" data-action="closeModal">'+icon('close',20)+'</span>' +
@@ -1598,7 +2100,7 @@
   }
 
   var candidateDraft;
-  function freshCandidateDraft(){ return {name:'', category:ITEM_CATEGORIES[0], area:(trip.regions&&trip.regions[0]?trip.regions[0].name:''), notes:''}; }
+  function freshCandidateDraft(){ return {name:'', category:ITEM_CATEGORIES[0], area:(trip.regions&&trip.regions[0]?trip.regions[0].name:''), notes:'', refLink:''}; }
   function renderAddCandidateModal(){
     if (!candidateDraft) candidateDraft = freshCandidateDraft();
     var d = candidateDraft;
@@ -1615,6 +2117,7 @@
       '</div>' +
       '<div class="field"><label>2. 呢個地區入邊，你諗住去邊度？</label><input type="text" id="cf-name" value="'+d.name+'" placeholder="例如：一蘭拉麵"></div>' +
       '<div class="field"><label>類別</label><select id="cf-category">'+ITEM_CATEGORIES.map(function(c){ return '<option '+(c===d.category?'selected':'')+'>'+c+'</option>'; }).join('')+'</select></div>' +
+      '<div class="field"><label>參考連結（optional，例如 IG／Threads 帖子）</label><input type="text" id="cf-reflink" value="'+d.refLink+'" placeholder="貼上個帖子連結"></div>' +
       '<div class="field"><label>備註（optional）</label><textarea id="cf-notes">'+d.notes+'</textarea></div>' +
       '<div class="modal-actions">' +
         '<button class="btn-secondary" data-action="closeModal">取消</button>' +
@@ -1628,9 +2131,11 @@
     var areaSel = document.getElementById('cf-area');
     var area = areaSel ? areaSel.value : (candidateDraft && candidateDraft.area) || '';
     var notes = document.getElementById('cf-notes').value;
+    var refLinkRaw = document.getElementById('cf-reflink').value.trim();
+    var refLink = refLinkRaw ? (/^https?:\/\//i.test(refLinkRaw) ? refLinkRaw : ('https://' + refLinkRaw)) : '';
     var regionObj = area ? findRegion(area) : null;
     var loc = regionObj ? regionObj.loc : {x:30+Math.random()*40,y:30+Math.random()*40};
-    candidatePlaces.push({id:nextId('c'), name:name, category:category, area:area, notes:notes, loc:loc, selected:false, addedToDay:null});
+    candidatePlaces.push({id:nextId('c'), name:name, category:category, area:area, notes:notes, refLink:refLink, loc:loc, selected:false, addedToDay:null});
     candidateDraft = null;
     markDirty();
     closeModal();
@@ -1698,6 +2203,7 @@
         pendingConfirmCallback = null; pendingPromptCallback = null;
         dismissDialogModal(); render(); return;
       }
+      if (state.modal && state.modal.type==='pickViewer' && state.modal.payload && state.modal.payload.mustPick) return;
       closeModal(); return;
     }
     if (action === 'confirmDialogOk'){
@@ -1727,7 +2233,56 @@
     if (action === 'stubAlert'){ showAlert(el.getAttribute('data-msg')); return; }
 
     if (action === 'openAddExpense'){ expenseDraft = freshExpenseDraft(); openModal('addExpense'); return; }
+    if (action === 'openEditExpense'){
+      var expToEdit = expenses.filter(function(e){ return e.id === el.getAttribute('data-id'); })[0];
+      if (!expToEdit) return;
+      expenseDraft = expenseDraftFromExisting(expToEdit);
+      openModal('addExpense');
+      return;
+    }
+    if (action === 'deleteExpense'){
+      var delExpId = el.getAttribute('data-id');
+      showConfirm('確定要刪除呢筆支出？此操作無法復原。', function(){
+        expenses = expenses.filter(function(e){ return e.id !== delExpId; });
+        expenseDraft = null;
+        markDirty();
+        closeModal();
+      });
+      return;
+    }
     if (action === 'openAddShopping'){ shoppingDraft = freshShoppingDraft(); openModal('addShopping'); return; }
+    if (action === 'openAddHotel'){ hotelDraft = freshHotelDraft(); openModal('addHotel'); return; }
+    if (action === 'openEditHotel'){
+      var hid = el.getAttribute('data-id');
+      var hotelToEdit = (trip.hotels||[]).filter(function(h){ return h.id===hid; })[0];
+      hotelDraft = freshHotelDraft(hotelToEdit);
+      openModal('addHotel');
+      return;
+    }
+    if (action === 'submitHotel'){ submitHotel(); return; }
+    if (action === 'openEditTripCover'){
+      tripCoverDraft = null;
+      openModal('editTripCover', {tripId: el.getAttribute('data-id')});
+      return;
+    }
+    if (action === 'clearTripCoverPhoto'){ if (tripCoverDraft){ tripCoverDraft.photo = null; tripCoverDraft.color = null; } renderModalOnly(); return; }
+    if (action === 'setTripCoverColor'){ if (tripCoverDraft){ tripCoverDraft.color = el.getAttribute('data-color'); tripCoverDraft.photo = null; } renderModalOnly(); return; }
+    if (action === 'submitTripCover'){ submitTripCover(); return; }
+    if (action === 'exportTripSummary'){
+      var summaryHtml = generateTripSummaryHTML();
+      downloadTextFile(trip.name+'-行程總結.html', summaryHtml);
+      return;
+    }
+    if (action === 'deleteHotel'){
+      var delHotelId = el.getAttribute('data-id');
+      showConfirm('確定要刪除呢個酒店紀錄？', function(){
+        trip.hotels = (trip.hotels||[]).filter(function(h){ return h.id !== delHotelId; });
+        hotelDraft = null;
+        markDirty();
+        closeModal();
+      });
+      return;
+    }
     if (action === 'closeModal'){ closeModal(); return; }
 
     if (action === 'setPaidBy'){ syncExpenseDraftFromDOM(); expenseDraft.paidBy = el.getAttribute('data-id'); renderModalOnly(); return; }
@@ -1917,7 +2472,9 @@
       syncGlobalsIntoCurrentBundle();
       loadTripIntoGlobals(el.getAttribute('data-id'));
       state.screen = 'trip'; state.tab = 'dashboard';
-      render(); return;
+      if (!viewerId || !memberExists(viewerId)) openModal('pickViewer', {mustPick:true});
+      else render();
+      return;
     }
     if (action === 'goHome'){
       syncGlobalsIntoCurrentBundle();
@@ -1943,12 +2500,38 @@
     if (action === 'setMemberColor'){ editMemberDraft.color = el.getAttribute('data-color'); renderModalOnly(); return; }
     if (action === 'setMemberEmoji'){ editMemberDraft.emoji = el.getAttribute('data-emoji'); renderModalOnly(); return; }
     if (action === 'clearMemberEmoji'){ editMemberDraft.emoji = null; renderModalOnly(); return; }
+    if (action === 'clearMemberPhoto'){ editMemberDraft.photo = null; renderModalOnly(); return; }
     if (action === 'submitEditMember'){ submitEditMember(); return; }
+    if (action === 'deleteMember'){
+      var delMemberId = el.getAttribute('data-id');
+      if (members.length <= 1){ showAlert('呢個旅程最少要有一位團員，未可以剷除埋佢。'); return; }
+      var delMember = findMember(delMemberId);
+      showConfirm('確定要將「'+delMember.name+'」剷除出呢個旅程？佢過往嘅支出／購物紀錄會保留（會顯示返個名），但唔會再喺團員名單度出現，亦都揀唔返做負責人。', function(){
+        archivedMembers[delMemberId] = {id:delMemberId, name:delMember.name, color:delMember.color};
+        members = members.filter(function(m){ return m.id !== delMemberId; });
+        if (viewerId === delMemberId) viewerId = null;
+        editMemberDraft = null;
+        markDirty();
+        if (!viewerId || !memberExists(viewerId)) openModal('pickViewer', {mustPick:true});
+        else closeModal();
+      });
+      return;
+    }
 
     if (action === 'openAddMember'){ addMemberDraft = freshAddMemberDraft(); openModal('addMember'); return; }
     if (action === 'setNewMemberColor'){ addMemberDraft.color = el.getAttribute('data-color'); renderModalOnly(); return; }
     if (action === 'setNewMemberEmoji'){ addMemberDraft.emoji = el.getAttribute('data-emoji'); renderModalOnly(); return; }
+    if (action === 'clearNewMemberPhoto'){ addMemberDraft.photo = null; renderModalOnly(); return; }
     if (action === 'submitAddMember'){ submitAddMember(); return; }
+
+    if (action === 'openPickViewer'){ openModal('pickViewer', {mustPick:false}); return; }
+    if (action === 'selectViewer'){ viewerId = el.getAttribute('data-id'); markDirty(); closeModal(); return; }
+    if (action === 'openAddMemberFromPicker'){
+      addMemberDraft = freshAddMemberDraft();
+      addMemberDraft.becomeViewer = true;
+      openModal('addMember');
+      return;
+    }
 
     if (action === 'settlePayment'){
       var from = el.getAttribute('data-from'), to = el.getAttribute('data-to'), amount = Number(el.getAttribute('data-amount'));
@@ -1969,6 +2552,15 @@
       expenseDraft.percent[id2] = el.value;
       updateSplitHintOnly();
     }
+    if (el.getAttribute && el.getAttribute('data-role')==='ctMemberBudget'){
+      createTripDraft.memberBudgets[el.getAttribute('data-idx')] = el.value;
+    }
+    if (el.id === 'ct-members'){
+      createTripDraft.memberNames = el.value;
+      var rowsEl = document.getElementById('ct-budget-rows');
+      if (rowsEl) rowsEl.innerHTML = createTripBudgetRowsHTML(createTripDraft);
+    }
+    if (el.id === 'f-amount'){ updateCurrencyHintOnly(); }
   });
 
   document.addEventListener('change', function(e){
@@ -1998,6 +2590,16 @@
         });
       } else { candidateDraft.area = el.value; renderModalOnly(); }
     }
+    if (el.id === 'em-photo' && el.files && el.files[0]){
+      readAndResizeImageFile(el.files[0], function(dataUrl){ editMemberDraft.photo = dataUrl; renderModalOnly(); });
+    }
+    if (el.id === 'am-photo' && el.files && el.files[0]){
+      readAndResizeImageFile(el.files[0], function(dataUrl){ addMemberDraft.photo = dataUrl; renderModalOnly(); });
+    }
+    if (el.id === 'tc-photo' && el.files && el.files[0]){
+      readAndResizeImageFile(el.files[0], function(dataUrl){ tripCoverDraft.photo = dataUrl; tripCoverDraft.color = null; renderModalOnly(); }, {width:640, height:360, quality:0.75});
+    }
+    if (el.id === 'f-currency'){ syncExpenseDraftFromDOM(); expenseDraft.currency = el.value; renderModalOnly(); }
   });
 
   var dragFromIdx = null;
@@ -2054,28 +2656,48 @@
   function submitExpense(){
     syncExpenseDraftFromDOM();
     var d = expenseDraft;
-    var amount = Number(d.amount);
-    if (!d.title || !amount || amount<=0){ showAlert('請輸入項目名稱同金額。'); return; }
+    var currency = d.currency || 'HKD';
+    var enteredAmount = Number(d.amount); // in whatever currency was selected
+    if (!d.title || !enteredAmount || enteredAmount<=0){ showAlert('請輸入項目名稱同金額。'); return; }
     if (!d.participants.length){ showAlert('請至少選擇一位分攤人。'); return; }
     var shares = null;
     if (d.splitType === 'custom'){
       var sum = 0; shares = {};
       d.participants.forEach(function(id){ var v = Number(d.custom[id]||0); shares[id]=v; sum += v; });
-      if (Math.round(sum) !== Math.round(amount)){ showAlert('自訂金額總和must等於支出金額。'); return; }
+      if (Math.round(sum) !== Math.round(enteredAmount)){ showAlert('自訂金額總和must等於支出金額。'); return; }
     } else if (d.splitType === 'percentage'){
       var psum = 0; shares = {};
       d.participants.forEach(function(id){ var v = Number(d.percent[id]||0); shares[id]=v; psum += v; });
       if (Math.round(psum) !== 100){ showAlert('比例總和必須等於 100%。'); return; }
     }
-    var newExpense = {
-      id:nextId('e'), title:d.title, amount:amount, category:d.category, paidBy:d.paidBy,
-      participants:d.participants.slice(), splitType:d.splitType, shares:shares, date:d.date, notes:d.notes
-    };
-    expenses.push(newExpense);
-    if (pendingItemLink){
-      var day = trip.days[pendingItemLink.dayIndex];
-      if (day && day.items[pendingItemLink.itemIndex]) day.items[pendingItemLink.itemIndex].linkedExpenseId = newExpense.id;
-      pendingItemLink = null;
+    // internally everything (balances, budgets, splits) is tracked in HKD —
+    // convert now that validation against the entered currency is done.
+    var rate = findCurrency(currency).rate;
+    var amountHKD = convertToHKD(enteredAmount, currency);
+    if (shares && d.splitType === 'custom'){
+      Object.keys(shares).forEach(function(id){ shares[id] = Math.round(shares[id]*rate); });
+    }
+    if (d.id){
+      // editing an existing expense — update it in place rather than adding a new record
+      var existing = expenses.filter(function(e){ return e.id === d.id; })[0];
+      if (existing){
+        existing.title = d.title; existing.amount = amountHKD; existing.category = d.category;
+        existing.paidBy = d.paidBy; existing.participants = d.participants.slice();
+        existing.splitType = d.splitType; existing.shares = shares; existing.date = d.date; existing.notes = d.notes;
+        existing.currency = currency; existing.originalAmount = (currency!=='HKD' ? enteredAmount : null);
+      }
+    } else {
+      var newExpense = {
+        id:nextId('e'), title:d.title, amount:amountHKD, category:d.category, paidBy:d.paidBy,
+        participants:d.participants.slice(), splitType:d.splitType, shares:shares, date:d.date, notes:d.notes,
+        currency: currency, originalAmount: (currency!=='HKD' ? enteredAmount : null)
+      };
+      expenses.push(newExpense);
+      if (pendingItemLink){
+        var day = trip.days[pendingItemLink.dayIndex];
+        if (day && day.items[pendingItemLink.itemIndex]) day.items[pendingItemLink.itemIndex].linkedExpenseId = newExpense.id;
+        pendingItemLink = null;
+      }
     }
     expenseDraft = null;
     markDirty();
@@ -2103,8 +2725,14 @@
     item.actualPrice = actual;
     item.status = 'purchased';
     if (purchaseAddExpense){
+      // a real expense always needs one payer — when the item was assigned to
+      // "大家都想要" rather than one person, fall back to whoever's currently
+      // viewing (or just the first member if no viewer is picked yet)
+      var payerFor = item.assignedTo === EVERYONE_ID
+        ? ((viewerId && memberExists(viewerId)) ? viewerId : members[0].id)
+        : item.assignedTo;
       var exp = {
-        id:nextId('e'), title:item.name, amount:actual, category:'購物', paidBy:item.assignedTo,
+        id:nextId('e'), title:item.name, amount:actual, category:'購物', paidBy:payerFor,
         participants:members.map(function(m){ return m.id; }), splitType:'equal', shares:null,
         date:new Date().toISOString().slice(0,10), notes:'來自購物清單'
       };
