@@ -381,6 +381,22 @@
     return out;
   }
 
+  // shows exactly how a split expense breaks down onto each team member —
+  // "邊個分咗幾多"，so a shared expense's per-person share is always visible
+  // right on the expense card, not just folded into an aggregate total.
+  function expenseSplitBreakdownHTML(e){
+    if (!e.participants || e.participants.length <= 1) return '';
+    var shares = shareFor(e);
+    var isForeign = e.currency && e.currency !== 'HKD';
+    return '<div class="expense-split-row">' +
+      e.participants.map(function(id){
+        var m = findMember(id);
+        var isYou = viewerId && id === viewerId;
+        var amountLabel = isForeign ? formatForeign((shares[id]||0) / findCurrency(e.currency).rate, e.currency) : fmt(shares[id]||0);
+        return '<span class="split-chip'+(isYou?' you':'')+'"><span class="split-chip-dot" style="background:'+m.color+';"></span>'+m.name+' <b class="num">'+amountLabel+'</b></span>';
+      }).join('') +
+    '</div>';
+  }
   function nonSettlement(){ return expenses.filter(function(e){ return e.category !== 'settlement'; }); }
 
   function totalSpend(){ return nonSettlement().reduce(function(s,e){ return s+e.amount; },0); }
@@ -571,7 +587,7 @@
 
   function persistAll(){
     saveLocal();
-    if (dataDirty){ dataDirty = false; scheduleSync(); }
+    if (dataDirty){ dataDirty = false; scheduleSync(); scheduleFirebasePush(); }
   }
 
   // ---------- persistence: local cache + shared server-side sync ----------
@@ -672,6 +688,180 @@
     });
   }
 
+  // ===================== 多裝置同步（Firebase，使用者自己嘅免費專案） =====================
+  // Independent, opt-in alternative to the artifact-publish sync above — for
+  // anyone hosting this app themselves (e.g. GitHub Pages) rather than inside
+  // a Claude Artifact. The WHOLE app state (every trip) is stored as ONE
+  // Firestore document keyed by a short "sync code" the user shares between
+  // their own devices. There is no login: knowing the code is what grants
+  // read/write, same trust model as a shared link — never share it beyond
+  // your own devices/travel group. Conflict handling is intentionally simple
+  // (last write wins by timestamp) rather than a real merge, since two people
+  // editing the exact same field at the exact same moment is a rare edge case
+  // for a small trip-planning app.
+  var FIREBASE_CONFIG_KEY = 'tripWallet_firebaseConfig';
+  var FIREBASE_SYNCCODE_KEY = 'tripWallet_syncCode';
+  var firebaseApp = null, firebaseDb = null, firebaseUnsub = null;
+  var firebaseSavedConfigText = '';
+  var firebaseSyncCode = null;
+  var firebaseSyncStatus = 'off'; // 'off' | 'connecting' | 'on' | 'error'
+  var firebaseSyncError = '';
+  var firebaseLastSyncedAt = null;
+  var firebaseLastPushedStamp = null; // guards against reacting to our own echoed write
+  var firebasePushTimer = null;
+
+  function parseFirebaseConfigText(text){
+    try { var j = JSON.parse(text); if (j && j.projectId) return j; } catch(e1){}
+    try { var f = (new Function('"use strict"; return (' + text + ');'))(); if (f && f.projectId) return f; } catch(e2){}
+    return null;
+  }
+
+  function loadFirebaseSettingsFromStorage(){
+    try{
+      var cfgRaw = localStorage.getItem(FIREBASE_CONFIG_KEY);
+      if (cfgRaw) firebaseSavedConfigText = cfgRaw;
+      var code = localStorage.getItem(FIREBASE_SYNCCODE_KEY);
+      if (code) firebaseSyncCode = code;
+    } catch(err){ /* storage unavailable on this device */ }
+  }
+
+  function initFirebaseIfConfigured(){
+    loadFirebaseSettingsFromStorage();
+    if (!firebaseSavedConfigText || !firebaseSyncCode) return;
+    connectFirebase(firebaseSavedConfigText, firebaseSyncCode, true);
+  }
+
+  function connectFirebase(configText, code, isAutoStart){
+    var cfg = parseFirebaseConfigText(configText);
+    if (!cfg){
+      firebaseSyncStatus = 'error';
+      firebaseSyncError = '呢個 Firebase 設定睇落唔完整（起碼要有 apiKey 同 projectId）。';
+      if (!isAutoStart) renderModalOnly();
+      return;
+    }
+    if (typeof firebase === 'undefined'){
+      firebaseSyncStatus = 'error';
+      firebaseSyncError = 'Firebase 函式庫未能載入（可能係網絡問題），請檢查網絡後再試。';
+      if (!isAutoStart) renderModalOnly();
+      return;
+    }
+    try{
+      firebaseSyncStatus = 'connecting';
+      firebaseSyncError = '';
+      if (!isAutoStart) renderModalOnly();
+      firebaseApp = (firebase.apps && firebase.apps.length) ? firebase.apps[0] : firebase.initializeApp(cfg);
+      firebaseDb = firebase.firestore();
+      firebaseSyncCode = code;
+      try{
+        localStorage.setItem(FIREBASE_CONFIG_KEY, configText);
+        localStorage.setItem(FIREBASE_SYNCCODE_KEY, code);
+      } catch(err){ /* storage unavailable — sync still works this session */ }
+      subscribeFirebaseDoc();
+    } catch(err){
+      firebaseSyncStatus = 'error';
+      firebaseSyncError = '連接 Firebase 失敗：' + (err && err.message ? err.message : '未知錯誤');
+      if (!isAutoStart) renderModalOnly();
+    }
+  }
+
+  function subscribeFirebaseDoc(){
+    if (!firebaseDb || !firebaseSyncCode) return;
+    if (firebaseUnsub){ firebaseUnsub(); firebaseUnsub = null; }
+    var docRef = firebaseDb.collection('tripwallet_sync').doc(firebaseSyncCode);
+    firebaseUnsub = docRef.onSnapshot(function(snap){
+      firebaseSyncStatus = 'on';
+      firebaseSyncError = '';
+      if (snap.metadata.hasPendingWrites){ render(); return; } // echo of our own optimistic write
+      var data = snap.data();
+      if (!data || !data.appState || data.updatedAt === firebaseLastPushedStamp){ render(); return; }
+      try{
+        applyPersistedState(JSON.parse(data.appState));
+        firebaseLastSyncedAt = data.updatedAt;
+      } catch(err){ /* malformed remote snapshot — ignore this update */ }
+      render();
+    }, function(err){
+      firebaseSyncStatus = 'error';
+      firebaseSyncError = '同步連線中斷：' + (err && err.message ? err.message : '未知錯誤');
+      render();
+    });
+  }
+
+  function scheduleFirebasePush(){
+    if (firebaseSyncStatus !== 'on' && firebaseSyncStatus !== 'connecting') return;
+    if (!firebaseDb || !firebaseSyncCode) return;
+    if (firebasePushTimer) clearTimeout(firebasePushTimer);
+    firebasePushTimer = setTimeout(function(){ firebasePushTimer = null; pushFirebaseNow(); }, 900);
+  }
+
+  function pushFirebaseNow(){
+    if (!firebaseDb || !firebaseSyncCode) return;
+    var stamp = Date.now();
+    firebaseLastPushedStamp = stamp;
+    var payload = { appState: JSON.stringify(serializeAppState()), updatedAt: stamp };
+    firebaseDb.collection('tripwallet_sync').doc(firebaseSyncCode).set(payload).then(function(){
+      firebaseLastSyncedAt = stamp;
+      renderModalOnly();
+    }).catch(function(err){
+      firebaseSyncStatus = 'error';
+      firebaseSyncError = '同步失敗：' + (err && err.message ? err.message : '未知錯誤');
+      render();
+    });
+  }
+
+  function generateSyncCode(){
+    var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous 0/O/1/I
+    var out = '';
+    for (var i=0;i<8;i++) out += chars[Math.floor(Math.random()*chars.length)];
+    return out.slice(0,4) + '-' + out.slice(4);
+  }
+
+  function stopFirebaseSync(){
+    if (firebaseUnsub){ firebaseUnsub(); firebaseUnsub = null; }
+    firebaseSyncStatus = 'off';
+    firebaseSyncCode = null;
+    try{ localStorage.removeItem(FIREBASE_SYNCCODE_KEY); } catch(err){}
+    render();
+  }
+
+  var syncDraft;
+  function freshSyncDraft(){ return { configText: firebaseSavedConfigText || '', joinCode: '' }; }
+
+  function renderSyncModal(){
+    if (!syncDraft) syncDraft = freshSyncDraft();
+    var d = syncDraft;
+    var statusLabel = {off:'未開啟', connecting:'連接緊...', on:'同步中 ✓', error:'連接失敗'}[firebaseSyncStatus];
+    var html = '' +
+      '<div class="sheet-handle"></div>' +
+      '<span class="close-x" data-action="closeModal">'+icon('close',20)+'</span>' +
+      '<div class="sheet-title">多裝置同步</div>' +
+      '<div style="font-size:12.5px;color:var(--muted);margin:-6px 0 16px 0;">用你自己免費嘅 Firebase 專案，將呢個 app 嘅資料即時同步到你其他裝置。呢個唔係登入戶口——淨係揸住「同步代碼」就可以讀寫呢份資料，千祈唔好將代碼分享俾陌生人。</div>';
+
+    if (!firebaseSavedConfigText){
+      html += '<div class="field"><label>1. 貼上你 Firebase 專案嘅設定（Firebase Console → 專案設定 → 你嘅網頁 App 度複製個 firebaseConfig）</label><textarea id="sync-config" rows="6" placeholder=\'{ apiKey: "...", projectId: "...", ... }\'>'+(d.configText||'')+'</textarea></div>' +
+        '<button type="button" class="btn-primary" style="width:100%;margin-bottom:14px;" data-action="saveFirebaseConfig">儲存設定</button>' +
+        '<div class="modal-actions"><button class="btn-secondary" data-action="closeModal" style="width:100%;">取消</button></div>';
+      return html;
+    }
+
+    html += '<div class="hint" style="color:var(--muted);margin-bottom:14px;">狀態：'+statusLabel+(firebaseSyncError?'　'+firebaseSyncError:'')+'</div>';
+
+    if (firebaseSyncCode && (firebaseSyncStatus==='on' || firebaseSyncStatus==='connecting')){
+      html += '<div class="field"><label>你嘅同步代碼（喺其他裝置輸入呢個代碼就可以加入同步）</label><input type="text" id="sync-code-display" value="'+firebaseSyncCode+'" readonly style="font-weight:700;letter-spacing:0.06em;"></div>' +
+        (firebaseLastSyncedAt ? '<div class="hint" style="color:var(--muted);margin:-8px 0 14px 0;">上次同步：'+new Date(firebaseLastSyncedAt).toLocaleString('zh-HK')+'</div>' : '') +
+        '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:10px;" data-action="manualFirebasePush">立即手動同步</button>' +
+        '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:14px;color:var(--negative);" data-action="stopFirebaseSyncAction">停止呢部裝置嘅同步</button>' +
+        '<div class="modal-actions"><button class="btn-primary" data-action="closeModal" style="width:100%;">完成</button></div>';
+    } else {
+      html += '<div class="field"><label>2a. 建立一個新嘅同步（呢部裝置依家嘅資料會做起點）</label></div>' +
+        '<button type="button" class="btn-primary" style="width:100%;margin-bottom:18px;" data-action="createSyncCode">建立新同步</button>' +
+        '<div class="field"><label>2b. 或者輸入其他裝置已經有嘅同步代碼（會攞返嗰邊嘅資料，覆蓋呢部裝置依家嘅資料）</label><input type="text" id="sync-join-code" value="'+(d.joinCode||'')+'" placeholder="例如：A1B2-C3D4"></div>' +
+        '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:14px;" data-action="joinSyncCode">加入同步</button>' +
+        '<button type="button" class="link-btn" style="margin-bottom:14px;" data-action="resetFirebaseConfig">← 更改 Firebase 設定</button>' +
+        '<div class="modal-actions"><button class="btn-secondary" data-action="closeModal" style="width:100%;">取消</button></div>';
+    }
+    return html;
+  }
+
   function renderTopbar(){
     var started = isTripStarted();
     var banner = readOnlyMode ? '<div class="readonly-banner">'+icon('chevronRight',14,'var(--accent-deep)')+'呢個連結係唯讀 — 你嘅改動只會存喺呢部機。請向擁有者要求編輯權限。</div>' : '';
@@ -710,7 +900,10 @@
 
   function renderTripsHome(){
     var html = '<div class="home-shell">' +
-      '<div class="home-header"><h1>我的旅程</h1><p class="home-sub">揀一個旅程繼續籌備，或者開始下一次旅行</p></div>' +
+      '<div class="home-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">' +
+        '<div><h1>我的旅程</h1><p class="home-sub">揀一個旅程繼續籌備，或者開始下一次旅行</p></div>' +
+        '<button class="link-btn" data-action="openSync" style="display:flex;align-items:center;gap:5px;white-space:nowrap;flex:none;margin-top:4px;">'+icon('cloud',17)+(firebaseSyncStatus==='on'?'同步中':'多裝置同步')+'</button>' +
+      '</div>' +
       '<div class="trip-card-list">';
     html += tripsStore.map(function(b){
       var t = b.trip;
@@ -881,6 +1074,33 @@
         ctx.drawImage(img, sx, sy, sw, sh, 0, 0, W, H);
         var dataUrl;
         try { dataUrl = canvas.toDataURL('image/jpeg', quality); }
+        catch(err){ showAlert('呢張相未能處理，請試試另一張。'); return; }
+        callback(dataUrl);
+      };
+      img.onerror = function(){ showAlert('呢張相未能讀取，請試試另一張。'); };
+      img.src = ev.target.result;
+    };
+    reader.onerror = function(){ showAlert('讀取檔案失敗，請再試一次。'); };
+    reader.readAsDataURL(file);
+  }
+  // reads a photo for OCR scanning WITHOUT cropping it (unlike the avatar/cover
+  // helper above) — only downscales if it's larger than maxDim, so no text
+  // near the edges of a booking screenshot/receipt gets cut off.
+  function readImageFileForOCR(file, callback, maxDim){
+    maxDim = maxDim || 1600;
+    if (!file || !window.FileReader){ showAlert('呢部裝置未能讀取相片。'); return; }
+    var reader = new FileReader();
+    reader.onload = function(ev){
+      var img = new Image();
+      img.onload = function(){
+        var scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        var w = Math.max(1, Math.round(img.width * scale)), h = Math.max(1, Math.round(img.height * scale));
+        var canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        var ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        var dataUrl;
+        try { dataUrl = canvas.toDataURL('image/jpeg', 0.92); }
         catch(err){ showAlert('呢張相未能處理，請試試另一張。'); return; }
         callback(dataUrl);
       };
@@ -1139,6 +1359,7 @@
     html += '<div class="section" style="padding-bottom:24px;">' +
       '<div class="section-title"><h2>快速操作</h2></div>' +
       '<div class="quick-actions">' +
+        '<button class="qa-btn" data-action="openScan">'+icon('camera',16)+'AI 掃描新增</button>' +
         '<button class="qa-btn" data-action="openAddExpense">'+icon('plus',16)+'新增支出</button>' +
         '<button class="qa-btn" data-action="openAddShopping">'+icon('plus',16)+'新增購物項目</button>' +
         '<button class="qa-btn" data-action="openAddItineraryItem">'+icon('plus',16)+'新增行程</button>' +
@@ -1674,6 +1895,7 @@
           '<div style="flex:1;">' +
             '<div style="font-size:14px;font-weight:600;">'+e.title+'</div>' +
             '<div style="font-size:11.5px;color:var(--muted);margin-top:2px;">'+findMember(e.paidBy).name+' 支付 · '+e.participants.length+' 人分攤 · '+e.category+'</div>' +
+            expenseSplitBreakdownHTML(e) +
           '</div>' +
           '<div style="text-align:right;">' +
             (e.currency && e.currency!=='HKD' && e.originalAmount ?
@@ -1828,11 +2050,230 @@
     else if (state.modal.type === 'pickViewer') sheetHTML = renderPickViewerModal(state.modal.payload);
     else if (state.modal.type === 'addHotel') sheetHTML = renderHotelModal();
     else if (state.modal.type === 'editTripCover') sheetHTML = renderEditTripCoverModal(state.modal.payload);
+    else if (state.modal.type === 'scan') sheetHTML = renderScanModal();
+    else if (state.modal.type === 'sync') sheetHTML = renderSyncModal();
     else if (state.modal.type === 'confirmDialog') sheetHTML = renderConfirmDialogModal(state.modal.payload);
     else if (state.modal.type === 'promptDialog') sheetHTML = renderPromptDialogModal(state.modal.payload);
     else if (state.modal.type === 'alertDialog') sheetHTML = renderAlertDialogModal(state.modal.payload);
     overlay.innerHTML = '<div class="sheet" data-action="stop">'+sheetHTML+'</div>';
     document.body.appendChild(overlay);
+  }
+
+  // ===================== AI 掃描新增（OCR） =====================
+  // Client-side OCR via Tesseract.js (loaded from CDN — needs the user's own
+  // internet access the first time, both for the library and each language's
+  // traineddata). Whatever OCR reads out is always shown as EDITABLE plain
+  // text — the user can hand-correct it, or skip photos entirely and just
+  // paste/type text — before any field gets auto-guessed, and the guessed
+  // fields are themselves editable and only ever get handed off into the
+  // normal add-hotel / add-itinerary / add-expense modal for a final review,
+  // never saved directly. This keeps the feature honest about OCR accuracy.
+  var scanDraft;
+  var SCAN_LANG_LABELS = {eng:'英文', chi_tra:'繁體中文', chi_sim:'簡體中文', jpn:'日文', kor:'韓文', tha:'泰文', vie:'越南文', fra:'法文'};
+  function freshScanDraft(){
+    return { kind:null, langs:{eng:true, chi_tra:true, chi_sim:false, jpn:false, kor:false, tha:false, vie:false, fra:false}, extraLangs:'', rawText:'', parsed:null, busy:false, error:'' };
+  }
+  function syncScanTextFromDOM(){
+    if (!scanDraft) return;
+    var ta = document.getElementById('scan-rawtext');
+    if (ta) scanDraft.rawText = ta.value;
+    var extra = document.getElementById('scan-extra-langs');
+    if (extra) scanDraft.extraLangs = extra.value;
+  }
+  function scanActiveLangString(){
+    var keys = Object.keys(scanDraft.langs).filter(function(k){ return scanDraft.langs[k]; });
+    if (scanDraft.extraLangs){
+      scanDraft.extraLangs.split(/[,\s]+/).forEach(function(code){
+        code = code.trim().toLowerCase();
+        if (code && keys.indexOf(code)===-1) keys.push(code);
+      });
+    }
+    return (keys.length ? keys : ['eng','chi_tra']).join('+');
+  }
+  function runScanOCR(dataUrl){
+    if (typeof Tesseract === 'undefined'){
+      scanDraft.error = 'OCR 函式庫未能載入（可能係網絡問題），你可以喺下面手動貼上文字代替。';
+      renderModalOnly();
+      return;
+    }
+    scanDraft.busy = true; scanDraft.error = '';
+    renderModalOnly();
+    var langs = scanActiveLangString();
+    Tesseract.recognize(dataUrl, langs).then(function(result){
+      scanDraft.rawText = (result && result.data && result.data.text) ? result.data.text : '';
+      scanDraft.busy = false;
+      parseScanText();
+      renderModalOnly();
+    }).catch(function(err){
+      scanDraft.busy = false;
+      scanDraft.error = '掃描失敗，你可以喺下面手動貼上文字代替（'+(err&&err.message?err.message:'未知錯誤')+'）。';
+      renderModalOnly();
+    });
+  }
+  // ---- best-effort text parsing helpers — everything they find is a GUESS
+  // shown for the user to review, never written straight into trip data ----
+  function scanPad2(n){ n = String(n); return n.length<2 ? '0'+n : n; }
+  var SCAN_MONTHS = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,
+    january:1,february:2,march:3,april:4,june:6,july:7,august:8,september:9,october:10,november:11,december:12};
+  // "Booking Date" / 訂購日期 etc. is when the order was PLACED, not the
+  // travel/stay/purchase date we actually want — matches shortly after that
+  // phrase are kept as a low-priority fallback instead of the first guess.
+  var SCAN_DATE_NOISE = /(booking date|order date|purchase date|訂購日期|落單日期|下單日期|訂單日期)\s*[:：]?\s*$/i;
+  function scanFindDates(text){
+    var primary = [], fallback = [], m;
+    function push(idx, value){
+      var before = text.slice(Math.max(0, idx-24), idx);
+      if (SCAN_DATE_NOISE.test(before)) fallback.push(value); else primary.push(value);
+    }
+    var re1 = /([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})/g;
+    while ((m = re1.exec(text))){ var mon=SCAN_MONTHS[m[1].toLowerCase()]; if (mon) push(m.index, m[3]+'-'+scanPad2(mon)+'-'+scanPad2(m[2])); }
+    var re2 = /\b(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})\b/g;
+    while ((m = re2.exec(text))){ push(m.index, m[1]+'-'+scanPad2(m[2])+'-'+scanPad2(m[3])); }
+    var re3 = /\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\b/g;
+    while ((m = re3.exec(text))){ push(m.index, m[3]+'-'+scanPad2(m[2])+'-'+scanPad2(m[1])); }
+    var re4 = /(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日/g;
+    while ((m = re4.exec(text))){ push(m.index, m[1]+'-'+scanPad2(m[2])+'-'+scanPad2(m[3])); }
+    return primary.concat(fallback);
+  }
+  function scanFindTimes(text){
+    var out = [], m;
+    var re = /\b(\d{1,2}):(\d{2})\s?([AaPp][Mm])?\b/g;
+    while ((m = re.exec(text))){
+      var h = Number(m[1]);
+      if (m[3]){ var ap = m[3].toLowerCase(); if (ap==='pm' && h<12) h+=12; if (ap==='am' && h===12) h=0; }
+      out.push(scanPad2(h)+':'+m[2]);
+    }
+    return out;
+  }
+  function scanFindRoute(text){
+    var re = /([A-Za-z一-鿿 .]{2,30}?)\s*\(([A-Z]{3})\)[^\n]{0,8}?[\-→>]{1,3}[^\n]{0,8}?([A-Za-z一-鿿 .]{2,30}?)\s*\(([A-Z]{3})\)/;
+    var m = re.exec(text);
+    return m ? {fromCity:m[1].trim(), fromCode:m[2], toCity:m[3].trim(), toCode:m[4]} : null;
+  }
+  function scanFindFlightNo(text){ var m = /\b([A-Z]{2}\s?\d{2,4})\b/.exec(text); return m ? m[1].replace(/\s/g,'') : ''; }
+  function scanFindAmount(text){
+    var best = null, bestVal = -1, m;
+    var re = /(HK\$|NT\$|US\$|R\$|¥|£|€|\$)\s?([\d,]+(?:\.\d{1,2})?)/g;
+    while ((m = re.exec(text))){ var v=Number(m[2].replace(/,/g,'')); if (!isNaN(v) && v>bestVal){ bestVal=v; best={symbol:m[1], amount:v}; } }
+    if (!best){
+      var re2 = /\b(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+\.\d{2})\b/g;
+      while ((m = re2.exec(text))){ var v2=Number(m[1].replace(/,/g,'')); if (!isNaN(v2) && v2>bestVal){ bestVal=v2; best={symbol:'', amount:v2}; } }
+    }
+    return best;
+  }
+  function scanGuessCurrency(symbol){
+    var map = {'HK$':'HKD','NT$':'TWD','US$':'USD','$':'USD','¥':'JPY','£':'GBP','€':'EUR','R$':'BRL'};
+    return map[symbol] || 'HKD';
+  }
+  function scanFirstMeaningfulLine(text){
+    var noise = /booking no\.?|confirmed|in \d+ days?|notice|trip coins|you'll earn|request ticket|^\d+$/i;
+    var lines = text.split('\n').map(function(l){ return l.trim(); }).filter(function(l){ return l.length>=2 && !noise.test(l); });
+    return lines[0] || '';
+  }
+  function parseScanText(){
+    var d = scanDraft, text = d.rawText || '';
+    var dates = scanFindDates(text), times = scanFindTimes(text), amt = scanFindAmount(text);
+    if (d.kind === 'itinerary'){
+      var route = scanFindRoute(text), flightNo = scanFindFlightNo(text);
+      var title = route ? (route.fromCity+'（'+route.fromCode+'）→ '+route.toCity+'（'+route.toCode+'）'+(flightNo?(' '+flightNo):'')) : scanFirstMeaningfulLine(text);
+      d.parsed = { title:title, date: dates[0]||'', time: times[0]||'12:00', category: route ? '交通' : '景點' };
+    } else if (d.kind === 'hotel'){
+      d.parsed = { name: scanFirstMeaningfulLine(text), checkIn: dates[0]||'', checkOut: dates[1]||'', notes: amt ? ('金額參考：'+(amt.symbol||'')+amt.amount) : '' };
+    } else if (d.kind === 'receipt'){
+      d.parsed = { title: scanFirstMeaningfulLine(text), amount: amt?amt.amount:'', currency: amt?scanGuessCurrency(amt.symbol):'HKD', date: dates[0]||'' };
+    }
+  }
+  function applyScanResult(){
+    syncScanTextFromDOM();
+    if (!scanDraft.parsed) parseScanText();
+    var d = scanDraft, p = d.parsed || {};
+    var gt = document.getElementById('scan-g-title');
+    var gdate = document.getElementById('scan-g-date');
+    var gtime = document.getElementById('scan-g-time');
+    var gin = document.getElementById('scan-g-checkin');
+    var gout = document.getElementById('scan-g-checkout');
+    var gamt = document.getElementById('scan-g-amount');
+    var gcur = document.getElementById('scan-g-currency');
+    if (d.kind === 'itinerary'){
+      var title = gt ? gt.value : (p.title||'');
+      var date = gdate ? gdate.value : (p.date||'');
+      var time = gtime ? gtime.value : (p.time||'12:00');
+      var matchedDayIdx = state.itineraryDayIndex;
+      if (date) trip.days.forEach(function(day,i){ if (day.date===date) matchedDayIdx=i; });
+      itineraryItemDraft = {
+        dayIndex: matchedDayIdx, time: time||'12:00', title: title||'',
+        category: (p.category && ITEM_CATEGORIES.indexOf(p.category)>=0) ? p.category : ITEM_CATEGORIES[0],
+        region: (trip.regions && trip.regions[0] ? trip.regions[0].name : '')
+      };
+      scanDraft = null;
+      openModal('addItineraryItem');
+    } else if (d.kind === 'hotel'){
+      hotelDraft = { id:null, name: gt?gt.value:(p.name||''), checkIn: gin?gin.value:(p.checkIn||''), checkOut: gout?gout.value:(p.checkOut||''), notes: p.notes||'' };
+      scanDraft = null;
+      openModal('addHotel');
+    } else if (d.kind === 'receipt'){
+      var title2 = gt ? gt.value : (p.title||'');
+      var amount2 = gamt ? gamt.value : (p.amount||'');
+      var currency2 = gcur ? gcur.value : (p.currency||'HKD');
+      var date2 = gdate ? gdate.value : (p.date||'');
+      expenseDraft = freshExpenseDraft({ title:title2, date:date2 });
+      expenseDraft.amount = amount2 || '';
+      expenseDraft.currency = currency2 || 'HKD';
+      scanDraft = null;
+      openModal('addExpense');
+    }
+  }
+  function renderScanModal(){
+    if (!scanDraft) scanDraft = freshScanDraft();
+    var d = scanDraft;
+    if (!d.kind){
+      return '' +
+        '<div class="sheet-handle"></div>' +
+        '<span class="close-x" data-action="closeModal">'+icon('close',20)+'</span>' +
+        '<div class="sheet-title">AI 掃描新增</div>' +
+        '<div style="font-size:12.5px;color:var(--muted);margin:-6px 0 16px 0;">影低張相（例如 Trip.com 訂單截圖、酒店確認、收據），AI 幫你讀出文字再自動填好表格，套用前記得覆核清楚。</div>' +
+        '<div style="display:flex;flex-direction:column;gap:10px;">' +
+          '<button type="button" class="btn-secondary scan-kind-btn" data-action="setScanKind" data-key="itinerary">'+icon('camera',18)+'<span>機票／票券／行程活動截圖</span></button>' +
+          '<button type="button" class="btn-secondary scan-kind-btn" data-action="setScanKind" data-key="hotel">'+icon('camera',18)+'<span>酒店訂房截圖</span></button>' +
+          '<button type="button" class="btn-secondary scan-kind-btn" data-action="setScanKind" data-key="receipt">'+icon('camera',18)+'<span>消費收據</span></button>' +
+        '</div>' +
+        '<div class="modal-actions"><button class="btn-secondary" data-action="closeModal" style="width:100%;">取消</button></div>';
+    }
+    var kindLabel = d.kind==='itinerary' ? '機票／票券／行程活動' : (d.kind==='hotel' ? '酒店訂房' : '消費收據');
+    var langChips = Object.keys(SCAN_LANG_LABELS).map(function(k){
+      return '<button type="button" class="chip scan-lang-chip '+(d.langs[k]?'active':'')+'" data-action="toggleScanLang" data-key="'+k+'">'+SCAN_LANG_LABELS[k]+'</button>';
+    }).join('');
+    var p = d.parsed, guessHTML = '';
+    if (p){
+      if (d.kind==='itinerary'){
+        guessHTML = '<div class="field"><label>標題</label><input type="text" id="scan-g-title" value="'+(p.title||'').replace(/"/g,'&quot;')+'"></div>' +
+          '<div class="row-2"><div class="field"><label>日期</label><input type="date" id="scan-g-date" value="'+(p.date||'')+'"></div><div class="field"><label>時間</label><input type="time" id="scan-g-time" value="'+(p.time||'12:00')+'"></div></div>';
+      } else if (d.kind==='hotel'){
+        guessHTML = '<div class="field"><label>酒店名稱</label><input type="text" id="scan-g-title" value="'+(p.name||'').replace(/"/g,'&quot;')+'"></div>' +
+          '<div class="row-2"><div class="field"><label>入住</label><input type="date" id="scan-g-checkin" value="'+(p.checkIn||'')+'"></div><div class="field"><label>退房</label><input type="date" id="scan-g-checkout" value="'+(p.checkOut||'')+'"></div></div>';
+      } else {
+        guessHTML = '<div class="field"><label>項目</label><input type="text" id="scan-g-title" value="'+(p.title||'').replace(/"/g,'&quot;')+'"></div>' +
+          '<div class="row-2"><div class="field"><label>金額</label><input type="number" id="scan-g-amount" value="'+(p.amount||'')+'"></div><div class="field"><label>貨幣</label><select id="scan-g-currency">'+currencyOptionsHTML(p.currency||'HKD')+'</select></div></div>' +
+          '<div class="field"><label>日期</label><input type="date" id="scan-g-date" value="'+(p.date||'')+'"></div>';
+      }
+    }
+    return '' +
+      '<div class="sheet-handle"></div>' +
+      '<span class="close-x" data-action="closeModal">'+icon('close',20)+'</span>' +
+      '<div class="sheet-title">AI 掃描 · '+kindLabel+'</div>' +
+      '<button type="button" class="link-btn" data-action="resetScanKind" style="margin:-8px 0 14px 0;">← 重新揀類型</button>' +
+      '<div class="field"><label>相片語言（可揀多種）</label><div style="display:flex;flex-wrap:wrap;gap:6px;">'+langChips+'</div></div>' +
+      '<div class="field"><label>其他語言代碼（Tesseract 語言碼，逗號分開，例如 spa,deu；非必填）</label><input type="text" id="scan-extra-langs" value="'+(d.extraLangs||'')+'"></div>' +
+      '<div class="field"><label>1. 上傳相片（或者跳過，直接喺下面貼上文字）</label><input type="file" accept="image/*" id="scan-file"></div>' +
+      (d.busy ? '<div class="hint" style="color:var(--muted);">🔄 OCR 掃描緊，請稍等（第一次用需要下載語言包，可能需時）...</div>' : '') +
+      (d.error ? '<div class="scan-guess-hint">'+d.error+'</div>' : '') +
+      '<div class="field"><label>2. 識別文字（可手動修改，或者直接貼文字上嚟都得）</label><textarea id="scan-rawtext" rows="5" placeholder="OCR 結果會顯示喺度，你都可以自己貼文字上嚟">'+(d.rawText||'')+'</textarea></div>' +
+      '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:14px;" data-action="reparseScanText">3. 自動解析文字</button>' +
+      (p ? ('<div class="scan-guess-hint">⚠️ AI 猜測結果，套用之前請覆核清楚：</div>'+guessHTML) : '') +
+      '<div class="modal-actions">' +
+        '<button class="btn-secondary" data-action="closeModal">取消</button>' +
+        '<button class="btn-primary" data-action="applyScanResult">套用並開啟表格</button>' +
+      '</div>';
   }
 
   // draft state for add-expense
@@ -2251,6 +2692,53 @@
       return;
     }
     if (action === 'openAddShopping'){ shoppingDraft = freshShoppingDraft(); openModal('addShopping'); return; }
+    if (action === 'openScan'){ scanDraft = freshScanDraft(); openModal('scan'); return; }
+    if (action === 'openSync'){ syncDraft = freshSyncDraft(); openModal('sync'); return; }
+    if (action === 'saveFirebaseConfig'){
+      var cfgEl = document.getElementById('sync-config');
+      var cfgTxt = cfgEl ? cfgEl.value.trim() : '';
+      if (!cfgTxt){ showAlert('請貼上 Firebase 設定。'); return; }
+      var parsedCfg = parseFirebaseConfigText(cfgTxt);
+      if (!parsedCfg){ showAlert('呢個設定睇落唔啱，請確認完整複製咗成個 firebaseConfig。'); return; }
+      firebaseSavedConfigText = cfgTxt;
+      try{ localStorage.setItem(FIREBASE_CONFIG_KEY, cfgTxt); } catch(err){}
+      syncDraft.configText = cfgTxt;
+      renderModalOnly();
+      return;
+    }
+    if (action === 'resetFirebaseConfig'){
+      firebaseSavedConfigText = '';
+      try{ localStorage.removeItem(FIREBASE_CONFIG_KEY); } catch(err){}
+      renderModalOnly();
+      return;
+    }
+    if (action === 'createSyncCode'){
+      var newCode = generateSyncCode();
+      connectFirebase(firebaseSavedConfigText, newCode, false);
+      pushFirebaseNow();
+      renderModalOnly();
+      return;
+    }
+    if (action === 'joinSyncCode'){
+      var joinEl = document.getElementById('sync-join-code');
+      var joinCode = joinEl ? joinEl.value.trim().toUpperCase() : '';
+      if (!joinCode){ showAlert('請輸入同步代碼。'); return; }
+      showConfirm('加入同步之後，呢部裝置依家嘅資料會俾同步代碼嗰邊嘅資料覆蓋，確定要繼續？', function(){
+        connectFirebase(firebaseSavedConfigText, joinCode, false);
+        renderModalOnly();
+      });
+      return;
+    }
+    if (action === 'manualFirebasePush'){ pushFirebaseNow(); return; }
+    if (action === 'stopFirebaseSyncAction'){
+      showConfirm('停止之後，呢部裝置唔會再自動同步（其他裝置唔受影響），確定？', function(){ stopFirebaseSync(); closeModal(); });
+      return;
+    }
+    if (action === 'setScanKind'){ syncScanTextFromDOM(); scanDraft.kind = el.getAttribute('data-key'); renderModalOnly(); return; }
+    if (action === 'resetScanKind'){ scanDraft.kind = null; scanDraft.rawText=''; scanDraft.parsed=null; scanDraft.error=''; renderModalOnly(); return; }
+    if (action === 'toggleScanLang'){ syncScanTextFromDOM(); var lk = el.getAttribute('data-key'); scanDraft.langs[lk] = !scanDraft.langs[lk]; renderModalOnly(); return; }
+    if (action === 'reparseScanText'){ syncScanTextFromDOM(); parseScanText(); renderModalOnly(); return; }
+    if (action === 'applyScanResult'){ applyScanResult(); return; }
     if (action === 'openAddHotel'){ hotelDraft = freshHotelDraft(); openModal('addHotel'); return; }
     if (action === 'openEditHotel'){
       var hid = el.getAttribute('data-id');
@@ -2599,6 +3087,9 @@
     if (el.id === 'tc-photo' && el.files && el.files[0]){
       readAndResizeImageFile(el.files[0], function(dataUrl){ tripCoverDraft.photo = dataUrl; tripCoverDraft.color = null; renderModalOnly(); }, {width:640, height:360, quality:0.75});
     }
+    if (el.id === 'scan-file' && el.files && el.files[0]){
+      readImageFileForOCR(el.files[0], function(dataUrl){ runScanOCR(dataUrl); });
+    }
     if (el.id === 'f-currency'){ syncExpenseDraftFromDOM(); expenseDraft.currency = el.value; renderModalOnly(); }
   });
 
@@ -2745,5 +3236,6 @@
 
   loadPersistedState();
   initArtifactCapability();
+  initFirebaseIfConfigured();
   render();
 })();
