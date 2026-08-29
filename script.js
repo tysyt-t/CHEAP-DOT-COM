@@ -2128,10 +2128,33 @@
   function scanPad2(n){ n = String(n); return n.length<2 ? '0'+n : n; }
   var SCAN_MONTHS = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,
     january:1,february:2,march:3,april:4,june:6,july:7,august:8,september:9,october:10,november:11,december:12};
-  // "Booking Date" / 訂購日期 etc. is when the order was PLACED, not the
-  // travel/stay/purchase date we actually want — matches shortly after that
-  // phrase are kept as a low-priority fallback instead of the first guess.
-  var SCAN_DATE_NOISE = /(booking date|order date|purchase date|訂購日期|落單日期|下單日期|訂單日期)\s*[:：]?\s*$/i;
+  // "Booking Date" / 訂購日期 etc. is when the order was PLACED, and a
+  // cancellation-deadline date ("您可以在 2026年12月1日 前免費取消") is neither
+  // the placed date nor the actual stay/travel date we actually want —
+  // matches shortly after any of these phrases are kept as a low-priority
+  // fallback instead of the first guess.
+  var SCAN_DATE_NOISE = /(booking date|order date|purchase date|訂購日期|落單日期|下單日期|訂單日期|您可以在|免費取消|取消政策|不設退款)\s*[:：]?\s*$/i;
+  // a hotel-stay range almost always appears as ONE line — "2026年12月3日
+  // 週四—12月5日 週六" or "December 3 - December 5, 2026" — where the second
+  // date usually omits the year (and sometimes the month). Matching the
+  // WHOLE range in one go is far more reliable than picking two unrelated
+  // dates out of scanFindDates(), which can just as easily grab a
+  // cancellation-policy date instead of the real check-out date.
+  function scanFindDateRange(text){
+    var m = /(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日[^\d\n]{0,10}(?:(\d{1,2})月\s*)?(\d{1,2})日/.exec(text);
+    if (m){
+      var y=m[1], mo1=scanPad2(m[2]), d1=scanPad2(m[3]), mo2=m[4]?scanPad2(m[4]):scanPad2(m[2]), d2=scanPad2(m[5]);
+      return { checkIn: y+'-'+mo1+'-'+d1, checkOut: y+'-'+mo2+'-'+d2 };
+    }
+    m = /([A-Za-z]{3,9})\s+(\d{1,2})\s*[-–—~]\s*([A-Za-z]{3,9})?\s*(\d{1,2}),?\s+(\d{4})/.exec(text);
+    if (m){
+      var mon1 = SCAN_MONTHS[m[1].toLowerCase()], mon2 = m[3] ? SCAN_MONTHS[m[3].toLowerCase()] : mon1;
+      if (mon1 && mon2){
+        return { checkIn: m[5]+'-'+scanPad2(mon1)+'-'+scanPad2(m[2]), checkOut: m[5]+'-'+scanPad2(mon2)+'-'+scanPad2(m[4]) };
+      }
+    }
+    return null;
+  }
   function scanFindDates(text){
     var primary = [], fallback = [], m;
     function push(idx, value){
@@ -2178,10 +2201,38 @@
     var map = {'HK$':'HKD','NT$':'TWD','US$':'USD','$':'USD','¥':'JPY','£':'GBP','€':'EUR','R$':'BRL'};
     return map[symbol] || 'HKD';
   }
+  // booking-confirmation screenshots (Trip.com and similar) are full of
+  // chrome text ABOVE the actual title — order/PIN numbers, badges, "paid",
+  // cancellation terms, action buttons — none of which is what the user
+  // wants filled in. This list is what "first meaningful line" actually
+  // needs to skip past to reach the real title.
+  var SCAN_LINE_NOISE = /booking no\.?|order no\.?|pin\s*碼|confirmed|in \d+ days?|^notice$|trip coins|you'll earn|request ticket|^\d+$|^\d{1,2}:\d{2}$|^[.\d\s%]+$|訂單編號|pin\s*碼|最低價格保證|酒店入住保障|入住保障|價格保證|已付款|已使用|已用|節省|價格詳情|現在可|您可以在|取消政策|免費取消|不設退款|入住[：:]|退房[：:]|修改日期|發送訊息|電話及電郵|住宿詳情|查看地圖|當地語言地址|管理訂單|取消訂單|延長住宿|^位置$|^地址$|^notice/i;
   function scanFirstMeaningfulLine(text){
-    var noise = /booking no\.?|confirmed|in \d+ days?|notice|trip coins|you'll earn|request ticket|^\d+$/i;
-    var lines = text.split('\n').map(function(l){ return l.trim(); }).filter(function(l){ return l.length>=2 && !noise.test(l); });
+    var lines = text.split('\n').map(function(l){ return l.trim(); }).filter(function(l){ return l.length>=2 && !SCAN_LINE_NOISE.test(l); });
     return lines[0] || '';
+  }
+  // hotel names reliably contain "酒店/飯店/Hotel/Resort/Inn" — searching for
+  // that keyword directly skips straight past all the chrome text above it,
+  // instead of relying on "first non-noise line" which still tends to catch
+  // whichever chrome line the noise list doesn't yet know about.
+  var SCAN_HOTEL_NAME_HINT = /(酒店|飯店|賓館|hotel|resort|hostel|inn\b|guesthouse)/i;
+  var SCAN_HOTEL_NAME_NOISE = /第\s*\d+\s*名|精選|入住保障|價格保證/;
+  function scanFindHotelName(text){
+    var lines = text.split('\n').map(function(l){ return l.trim(); }).filter(function(l){ return l.length>=2; });
+    for (var i=0;i<lines.length;i++){
+      if (SCAN_HOTEL_NAME_HINT.test(lines[i]) && !SCAN_HOTEL_NAME_NOISE.test(lines[i]) && !SCAN_LINE_NOISE.test(lines[i])) return lines[i];
+    }
+    return scanFirstMeaningfulLine(text);
+  }
+  // the address sits right after a "位置/地址/Location/Address" label in
+  // these screenshots, or otherwise looks like "<number> <street>, <area>".
+  function scanFindAddress(text){
+    var lines = text.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+    for (var i=0;i<lines.length;i++){
+      if (/^(位置|地址|location|address)[:：]?$/i.test(lines[i]) && lines[i+1]) return lines[i+1];
+    }
+    var m = /\d+[^\n,，]{2,40}[,，][^\n]{2,60}/.exec(text);
+    return m ? m[0].trim() : '';
   }
   function parseScanText(){
     var d = scanDraft, text = d.rawText || '';
@@ -2191,7 +2242,17 @@
       var title = route ? (route.fromCity+'（'+route.fromCode+'）→ '+route.toCity+'（'+route.toCode+'）'+(flightNo?(' '+flightNo):'')) : scanFirstMeaningfulLine(text);
       d.parsed = { title:title, date: dates[0]||'', time: times[0]||'12:00', category: route ? '交通' : '景點' };
     } else if (d.kind === 'hotel'){
-      d.parsed = { name: scanFirstMeaningfulLine(text), checkIn: dates[0]||'', checkOut: dates[1]||'', notes: amt ? ('金額參考：'+(amt.symbol||'')+amt.amount) : '' };
+      var range = scanFindDateRange(text);
+      var address = scanFindAddress(text);
+      var notesParts = [];
+      if (amt) notesParts.push('金額參考：'+(amt.symbol||'')+amt.amount);
+      if (address) notesParts.push('地址：'+address);
+      d.parsed = {
+        name: scanFindHotelName(text),
+        checkIn: range ? range.checkIn : (dates[0]||''),
+        checkOut: range ? range.checkOut : (dates[1]||''),
+        notes: notesParts.join('\n')
+      };
     } else if (d.kind === 'receipt'){
       d.parsed = { title: scanFirstMeaningfulLine(text), amount: amt?amt.amount:'', currency: amt?scanGuessCurrency(amt.symbol):'HKD', date: dates[0]||'' };
     }
