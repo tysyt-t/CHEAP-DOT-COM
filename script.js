@@ -746,17 +746,21 @@
       return;
     }
     try{
-      firebaseSyncStatus = 'connecting';
-      firebaseSyncError = '';
-      if (!isAutoStart) renderModalOnly();
       firebaseApp = (firebase.apps && firebase.apps.length) ? firebase.apps[0] : firebase.initializeApp(cfg);
       firebaseDb = firebase.firestore();
+      // set every piece of state BEFORE the render call below — rendering
+      // with the sync code still unset was the bug: the modal fell through
+      // to its "not connected yet" branch and looked like the click did
+      // nothing at all, even on a fully successful connection.
       firebaseSyncCode = code;
+      firebaseSyncStatus = 'connecting';
+      firebaseSyncError = '';
       try{
         localStorage.setItem(FIREBASE_CONFIG_KEY, configText);
         localStorage.setItem(FIREBASE_SYNCCODE_KEY, code);
       } catch(err){ /* storage unavailable — sync still works this session */ }
       subscribeFirebaseDoc();
+      if (!isAutoStart) renderModalOnly();
     } catch(err){
       firebaseSyncStatus = 'error';
       firebaseSyncError = '連接 Firebase 失敗：' + (err && err.message ? err.message : '未知錯誤');
@@ -795,17 +799,26 @@
 
   function pushFirebaseNow(){
     if (!firebaseDb || !firebaseSyncCode) return;
-    var stamp = Date.now();
-    firebaseLastPushedStamp = stamp;
-    var payload = { appState: JSON.stringify(serializeAppState()), updatedAt: stamp };
-    firebaseDb.collection('tripwallet_sync').doc(firebaseSyncCode).set(payload).then(function(){
-      firebaseLastSyncedAt = stamp;
-      renderModalOnly();
-    }).catch(function(err){
+    try{
+      var stamp = Date.now();
+      firebaseLastPushedStamp = stamp;
+      var payload = { appState: JSON.stringify(serializeAppState()), updatedAt: stamp };
+      firebaseDb.collection('tripwallet_sync').doc(firebaseSyncCode).set(payload).then(function(){
+        firebaseLastSyncedAt = stamp;
+        renderModalOnly();
+      }).catch(function(err){
+        firebaseSyncStatus = 'error';
+        firebaseSyncError = '同步失敗：' + (err && err.message ? err.message : '未知錯誤');
+        render();
+      });
+    } catch(err){
+      // a SYNCHRONOUS throw here (e.g. malformed Firestore call) used to abort
+      // the whole click handler silently, which is exactly what looked like
+      // "clicking the button does nothing" — always surface it now instead.
       firebaseSyncStatus = 'error';
       firebaseSyncError = '同步失敗：' + (err && err.message ? err.message : '未知錯誤');
       render();
-    });
+    }
   }
 
   function generateSyncCode(){
