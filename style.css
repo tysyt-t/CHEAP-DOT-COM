@@ -108,6 +108,8 @@
   .status-dot.purchased{background:var(--positive);border-color:var(--positive);}
   .status-dot.not_needed{background:var(--line);border-color:var(--line);}
 
+  .map-btn{display:flex;align-items:center;justify-content:center;width:32px;height:32px;flex:none;border-radius:10px;background:var(--surface-2);color:var(--accent-deep);text-decoration:none;align-self:center;}
+  .map-btn:active{transform:scale(0.92);}
   .expense-card{display:flex;align-items:center;gap:12px;padding:14px;background:var(--surface);border-radius:var(--r-lg);box-shadow:var(--shadow-sm);margin-bottom:9px;cursor:pointer;}
   .expense-icon{width:40px;height:40px;border-radius:13px;background:var(--accent-tint);color:var(--accent-deep);display:flex;align-items:center;justify-content:center;flex-shrink:0;}
   .date-heading{font-size:12px;color:var(--muted);font-weight:700;margin:18px 0 9px 0;letter-spacing:0.04em;}
