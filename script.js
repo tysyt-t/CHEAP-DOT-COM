@@ -598,7 +598,11 @@
     syncGlobalsIntoCurrentBundle();
     return {
       v:2, tripsStore: tripsStore, currentTripId: currentTripId, idSeed: idSeed,
-      screen: state.screen, tab: state.tab, itineraryDayIndex: state.itineraryDayIndex
+      screen: state.screen, tab: state.tab, itineraryDayIndex: state.itineraryDayIndex,
+      // travels with the synced data on purpose: the key then reaches every
+      // one of the user's devices by itself, and never has to sit in the
+      // public source repo where anyone could lift it.
+      settings: { geminiKey: geminiKey || '' }
     };
   }
 
@@ -617,6 +621,8 @@
     if (saved.screen === 'home' || saved.screen === 'trip') state.screen = saved.screen;
     if (typeof saved.tab === 'string') state.tab = saved.tab;
     if (typeof saved.itineraryDayIndex === 'number') state.itineraryDayIndex = saved.itineraryDayIndex;
+    // never let an empty synced value wipe a key this device already has
+    if (saved.settings && saved.settings.geminiKey) setGeminiKey(saved.settings.geminiKey, true);
   }
 
   function getBundleFrom(store, id){ return store.filter(function(b){ return b.id===id; })[0]; }
@@ -701,6 +707,19 @@
   // for a small trip-planning app.
   var FIREBASE_CONFIG_KEY = 'tripWallet_firebaseConfig';
   var FIREBASE_SYNCCODE_KEY = 'tripWallet_syncCode';
+  // Built-in project so nobody has to set up Firebase to sync. A Firebase web
+  // config is public by design (it identifies the project, it is not a
+  // secret) — what actually guards the data is the sync code, which is why
+  // the code must be treated like a private link and never posted publicly.
+  // Anyone who prefers their own project can still override this below.
+  var DEFAULT_FIREBASE_CONFIG = {
+    apiKey: "AIzaSyBjqWJqGC3-TV07oYv28dP3yvOt8bTgg6w",
+    authDomain: "trip-wallet-sync.firebaseapp.com",
+    projectId: "trip-wallet-sync",
+    storageBucket: "trip-wallet-sync.firebasestorage.app",
+    messagingSenderId: "650211141696",
+    appId: "1:650211141696:web:5e580fc6fa317a3834d7a5"
+  };
   var firebaseApp = null, firebaseDb = null, firebaseUnsub = null;
   var firebaseSavedConfigText = '';
   var firebaseSyncCode = null;
@@ -716,6 +735,34 @@
     return null;
   }
 
+  function activeFirebaseConfigText(){
+    return firebaseSavedConfigText || JSON.stringify(DEFAULT_FIREBASE_CONFIG);
+  }
+  function usingOwnFirebaseProject(){ return !!firebaseSavedConfigText; }
+
+  // The sync code also lives in the URL, so opening the same link on another
+  // device — or in a private window, where localStorage is wiped every time —
+  // reconnects to the same data with nothing to set up and nothing to retype.
+  function syncCodeFromURL(){
+    try{
+      var h = (window.location.hash || '').replace(/^#/, '');
+      var m = /(?:^|&)(?:sync|trip)=([A-Za-z0-9-]{4,24})/.exec(h);
+      return m ? m[1].toUpperCase() : null;
+    } catch(err){ return null; }
+  }
+  function writeSyncCodeToURL(code){
+    try{
+      if (code) window.location.replace('#sync=' + code);
+      else if (window.location.hash) window.location.replace('#');
+    } catch(err){ /* some embedded webviews block hash writes — harmless */ }
+  }
+  function syncShareLink(){
+    if (!firebaseSyncCode) return '';
+    try{
+      return window.location.origin + window.location.pathname + '#sync=' + firebaseSyncCode;
+    } catch(err){ return '#sync=' + firebaseSyncCode; }
+  }
+
   function loadFirebaseSettingsFromStorage(){
     try{
       var cfgRaw = localStorage.getItem(FIREBASE_CONFIG_KEY);
@@ -727,8 +774,12 @@
 
   function initFirebaseIfConfigured(){
     loadFirebaseSettingsFromStorage();
-    if (!firebaseSavedConfigText || !firebaseSyncCode) return;
-    connectFirebase(firebaseSavedConfigText, firebaseSyncCode, true);
+    // a code in the link always wins — that is how a shared link is meant to
+    // hand this device the right trip, even over whatever it synced last.
+    var urlCode = syncCodeFromURL();
+    var code = urlCode || firebaseSyncCode;
+    if (!code) return;
+    connectFirebase(activeFirebaseConfigText(), code, true);
   }
 
   function connectFirebase(configText, code, isAutoStart){
@@ -756,9 +807,12 @@
       firebaseSyncStatus = 'connecting';
       firebaseSyncError = '';
       try{
-        localStorage.setItem(FIREBASE_CONFIG_KEY, configText);
+        // only persist a config the user actually supplied — storing the
+        // built-in one would freeze this device on today's copy of it
+        if (firebaseSavedConfigText) localStorage.setItem(FIREBASE_CONFIG_KEY, configText);
         localStorage.setItem(FIREBASE_SYNCCODE_KEY, code);
-      } catch(err){ /* storage unavailable — sync still works this session */ }
+      } catch(err){ /* storage unavailable — the link still carries the code */ }
+      writeSyncCodeToURL(code);
       subscribeFirebaseDoc();
       if (!isAutoStart) renderModalOnly();
     } catch(err){
@@ -833,11 +887,12 @@
     firebaseSyncStatus = 'off';
     firebaseSyncCode = null;
     try{ localStorage.removeItem(FIREBASE_SYNCCODE_KEY); } catch(err){}
+    writeSyncCodeToURL(null);
     render();
   }
 
   var syncDraft;
-  function freshSyncDraft(){ return { configText: firebaseSavedConfigText || '', joinCode: '' }; }
+  function freshSyncDraft(){ return { configText: firebaseSavedConfigText || '', joinCode: '', showAdvanced: false, copied: false }; }
 
   function renderSyncModal(){
     if (!syncDraft) syncDraft = freshSyncDraft();
@@ -846,33 +901,43 @@
     var html = '' +
       '<div class="sheet-handle"></div>' +
       '<span class="close-x" data-action="closeModal">'+icon('close',20)+'</span>' +
-      '<div class="sheet-title">多裝置同步</div>' +
-      '<div style="font-size:12.5px;color:var(--muted);margin:-6px 0 16px 0;">用你自己免費嘅 Firebase 專案，將呢個 app 嘅資料即時同步到你其他裝置。呢個唔係登入戶口——淨係揸住「同步代碼」就可以讀寫呢份資料，千祈唔好將代碼分享俾陌生人。</div>';
+      '<div class="sheet-title">多裝置同步</div>';
 
-    if (!firebaseSavedConfigText){
-      html += '<div class="field"><label>1. 貼上你 Firebase 專案嘅設定（Firebase Console → 專案設定 → 你嘅網頁 App 度複製個 firebaseConfig）</label><textarea id="sync-config" rows="6" placeholder=\'{ apiKey: "...", projectId: "...", ... }\'>'+(d.configText||'')+'</textarea></div>' +
-        '<button type="button" class="btn-primary" style="width:100%;margin-bottom:14px;" data-action="saveFirebaseConfig">儲存設定</button>' +
-        '<div class="modal-actions"><button class="btn-secondary" data-action="closeModal" style="width:100%;">取消</button></div>';
-      return html;
+    // ----- advanced: bring your own Firebase project (optional) -----
+    if (d.showAdvanced){
+      return html +
+        '<div style="font-size:12.5px;color:var(--muted);margin:-6px 0 16px 0;">預設已經用咗一個內置嘅資料庫，唔使自己設定。如果你想改用自己嘅 Firebase 專案，先喺下面貼低個 firebaseConfig。</div>' +
+        '<div class="field"><label>你嘅 Firebase 設定（Firebase Console → 專案設定 → 網頁 App）</label><textarea id="sync-config" rows="6" placeholder=\'{ apiKey: "...", projectId: "...", ... }\'>'+(d.configText||'')+'</textarea></div>' +
+        '<button type="button" class="btn-primary" style="width:100%;margin-bottom:10px;" data-action="saveFirebaseConfig">儲存並改用自己嘅專案</button>' +
+        (firebaseSavedConfigText ? '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:14px;" data-action="resetFirebaseConfig">改返用內置資料庫</button>' : '') +
+        '<div class="modal-actions"><button class="btn-secondary" data-action="hideSyncAdvanced" style="width:100%;">返回</button></div>';
     }
 
-    html += '<div class="hint" style="color:var(--muted);margin-bottom:14px;">狀態：'+statusLabel+(firebaseSyncError?'　'+firebaseSyncError:'')+'</div>';
-
+    // ----- connected -----
     if (firebaseSyncCode && (firebaseSyncStatus==='on' || firebaseSyncStatus==='connecting')){
-      html += '<div class="field"><label>你嘅同步代碼（喺其他裝置輸入呢個代碼就可以加入同步）</label><input type="text" id="sync-code-display" value="'+firebaseSyncCode+'" readonly style="font-weight:700;letter-spacing:0.06em;"></div>' +
-        (firebaseLastSyncedAt ? '<div class="hint" style="color:var(--muted);margin:-8px 0 14px 0;">上次同步：'+new Date(firebaseLastSyncedAt).toLocaleString('zh-HK')+'</div>' : '') +
+      var link = syncShareLink();
+      return html +
+        '<div class="hint" style="color:var(--muted);margin:-6px 0 14px 0;">狀態：'+statusLabel+(firebaseSyncError?'　'+firebaseSyncError:'')+'</div>' +
+        '<div class="field"><label>你嘅同步代碼</label><input type="text" id="sync-code-display" value="'+firebaseSyncCode+'" readonly style="font-weight:700;letter-spacing:0.08em;text-align:center;font-size:17px;"></div>' +
+        '<div class="field"><label>同步連結（喺其他裝置開呢條link就自動連返同一份資料，無痕視窗都用得）</label><input type="text" id="sync-share-link" value="'+link+'" readonly style="font-size:12px;"></div>' +
+        '<button type="button" class="btn-primary" style="width:100%;margin-bottom:10px;" data-action="copySyncLink">'+(d.copied?'已複製 ✓':'複製同步連結')+'</button>' +
+        (firebaseLastSyncedAt ? '<div class="hint" style="color:var(--muted);margin:0 0 12px 0;">上次同步：'+new Date(firebaseLastSyncedAt).toLocaleString('zh-HK')+'</div>' : '') +
+        '<div class="scan-guess-hint" style="color:var(--muted);background:var(--surface-2);">⚠️ 揸住呢條連結／代碼就可以讀寫呢份資料（冇密碼保護），淨係傳俾自己人。</div>' +
         '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:10px;" data-action="manualFirebasePush">立即手動同步</button>' +
-        '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:14px;color:var(--negative);" data-action="stopFirebaseSyncAction">停止呢部裝置嘅同步</button>' +
+        '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:10px;color:var(--negative);" data-action="stopFirebaseSyncAction">停止呢部裝置嘅同步</button>' +
+        '<button type="button" class="link-btn" style="margin-bottom:14px;" data-action="showSyncAdvanced">進階：用自己嘅 Firebase 專案</button>' +
         '<div class="modal-actions"><button class="btn-primary" data-action="closeModal" style="width:100%;">完成</button></div>';
-    } else {
-      html += '<div class="field"><label>2a. 建立一個新嘅同步（呢部裝置依家嘅資料會做起點）</label></div>' +
-        '<button type="button" class="btn-primary" style="width:100%;margin-bottom:18px;" data-action="createSyncCode">建立新同步</button>' +
-        '<div class="field"><label>2b. 或者輸入其他裝置已經有嘅同步代碼（會攞返嗰邊嘅資料，覆蓋呢部裝置依家嘅資料）</label><input type="text" id="sync-join-code" value="'+(d.joinCode||'')+'" placeholder="例如：A1B2-C3D4"></div>' +
-        '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:14px;" data-action="joinSyncCode">加入同步</button>' +
-        '<button type="button" class="link-btn" style="margin-bottom:14px;" data-action="resetFirebaseConfig">← 更改 Firebase 設定</button>' +
-        '<div class="modal-actions"><button class="btn-secondary" data-action="closeModal" style="width:100%;">取消</button></div>';
     }
-    return html;
+
+    // ----- not connected yet: zero setup needed -----
+    return html +
+      '<div style="font-size:12.5px;color:var(--muted);margin:-6px 0 16px 0;">開一次就得，唔使註冊、唔使設定。開咗之後你會收到一條同步連結，喺其他裝置開嗰條link就自動見到同一份資料。</div>' +
+      (firebaseSyncStatus==='error' ? '<div class="scan-guess-hint">狀態：'+statusLabel+'　'+firebaseSyncError+'</div>' : '') +
+      '<button type="button" class="btn-primary" style="width:100%;margin-bottom:18px;" data-action="createSyncCode">開始同步（用呢部裝置嘅資料）</button>' +
+      '<div class="field"><label>或者輸入其他裝置嘅同步代碼（會攞返嗰邊嘅資料，覆蓋呢部裝置依家嘅資料）</label><input type="text" id="sync-join-code" value="'+(d.joinCode||'')+'" placeholder="例如：A1B2-C3D4"></div>' +
+      '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:12px;" data-action="joinSyncCode">加入同步</button>' +
+      '<button type="button" class="link-btn" style="margin-bottom:14px;" data-action="showSyncAdvanced">進階：用自己嘅 Firebase 專案</button>' +
+      '<div class="modal-actions"><button class="btn-secondary" data-action="closeModal" style="width:100%;">取消</button></div>';
   }
 
   function renderTopbar(){
@@ -1378,6 +1443,7 @@
         '<button class="qa-btn" data-action="openAddItineraryItem">'+icon('plus',16)+'新增行程</button>' +
         '<button class="qa-btn" data-action="openAddMember">'+icon('plus',16)+'加入團員</button>' +
         '<button class="qa-btn" data-action="exportTripSummary">'+icon('receipt',16)+'匯出行程總結</button>' +
+        '<button class="qa-btn" data-action="openSync">'+icon('cloud',16)+(firebaseSyncStatus==='on'?'同步中':'多裝置同步')+'</button>' +
       '</div>' +
     '</div>';
 
@@ -2084,7 +2150,7 @@
   var scanDraft;
   var SCAN_LANG_LABELS = {eng:'英文', chi_tra:'繁體中文', chi_sim:'簡體中文', jpn:'日文', kor:'韓文', tha:'泰文', vie:'越南文', fra:'法文'};
   function freshScanDraft(){
-    return { kind:null, langs:{eng:true, chi_tra:true, chi_sim:false, jpn:false, kor:false, tha:false, vie:false, fra:false}, extraLangs:'', rawText:'', parsed:null, busy:false, error:'' };
+    return { kind:null, langs:{eng:true, chi_tra:true, chi_sim:false, jpn:false, kor:false, tha:false, vie:false, fra:false}, extraLangs:'', rawText:'', parsed:null, busy:false, error:'', engine:'', showKeySetup:false, keyInput:geminiKey||'' };
   }
   function syncScanTextFromDOM(){
     if (!scanDraft) return;
@@ -2123,27 +2189,218 @@
       renderModalOnly();
     });
   }
+  // ===================== AI 視覺掃描（Gemini，免費層） =====================
+  // Tesseract reads a photo character by character, so a phone snap of a
+  // curled thermal receipt at an angle comes back as mush no amount of
+  // parsing can rescue. A vision model reads the photo the way a person
+  // does and can hand back the FIELDS directly, which is why this is the
+  // primary engine and Tesseract is only the offline fallback.
+  var GEMINI_KEY_STORAGE = 'tripWallet_geminiKey';
+  var geminiKey = '';
+  var geminiModelName = '';   // resolved at run time, never hard-coded
+  function setGeminiKey(key, skipPersist){
+    geminiKey = (key || '').trim();
+    if (skipPersist) return;
+    try{
+      if (geminiKey) localStorage.setItem(GEMINI_KEY_STORAGE, geminiKey);
+      else localStorage.removeItem(GEMINI_KEY_STORAGE);
+    } catch(err){ /* storage unavailable — the key still works this session */ }
+  }
+  function loadGeminiKeyFromStorage(){
+    try{ var k = localStorage.getItem(GEMINI_KEY_STORAGE); if (k) geminiKey = k; }
+    catch(err){ /* storage unavailable */ }
+  }
+  // Model ids come and go, so ask the API which models this key can actually
+  // use instead of pinning a name that may be retired later.
+  function resolveGeminiModel(){
+    if (geminiModelName) return Promise.resolve(geminiModelName);
+    return fetch('https://generativelanguage.googleapis.com/v1beta/models?key=' + encodeURIComponent(geminiKey))
+      .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, body:j}; }); })
+      .then(function(res){
+        if (!res.ok) throw new Error(geminiErrorMessage(res.body));
+        var models = (res.body && res.body.models) || [];
+        var usable = models.filter(function(m){
+          return (m.supportedGenerationMethods || []).indexOf('generateContent') !== -1;
+        });
+        // prefer a "flash" model: fast and the most generous on the free tier
+        var flash = usable.filter(function(m){ return /flash/i.test(m.name) && !/thinking|image|tts|live/i.test(m.name); });
+        var chosen = (flash[0] || usable[0]);
+        if (!chosen) throw new Error('呢個 API key 用唔到任何模型。');
+        geminiModelName = chosen.name.replace(/^models\//, '');
+        return geminiModelName;
+      });
+  }
+  function geminiErrorMessage(body){
+    var e = body && body.error;
+    if (!e) return '未知錯誤';
+    if (e.status === 'PERMISSION_DENIED' || e.code === 403) return 'API key 唔啱或者未有權限（請確認由 Google AI Studio 攞嘅 key）。';
+    if (e.status === 'RESOURCE_EXHAUSTED' || e.code === 429) return '已經超出免費額度，休息一陣再試。';
+    if (e.code === 400 && /API key not valid/i.test(e.message || '')) return 'API key 唔啱，請再檢查一次。';
+    return e.message || '未知錯誤';
+  }
+  var GEMINI_SCHEMA_BY_KIND = {
+    receipt: '{"title": string, "amount": number, "currency": string, "date": string}',
+    hotel: '{"name": string, "checkIn": string, "checkOut": string, "address": string, "amount": number, "currency": string}',
+    itinerary: '{"title": string, "date": string, "time": string, "category": string}'
+  };
+  var GEMINI_RULES_BY_KIND = {
+    receipt: [
+      '呢張係一張消費單據／收據。',
+      'title：舖頭名 + 買咗嘅主要貨品名，例如「IKEA 麥芽酸種麵包」。如果有多件貨品，寫最主要嗰件或者用頓號分隔。唔好用訂單編號、交易編號做標題。',
+      'amount：實際付款總額（Total／總額／已付款嗰個數）。唔好攞交易編號、卡號、單號、找贖、折扣或者回贈。',
+      'currency：三個字母嘅貨幣代碼，例如 HKD、JPY、TWD。睇唔到就寫 HKD。',
+      'date：消費日期。留意單據好多時用 DD/MM/YY，例如 29/08/26 即係 2026-08-29。'
+    ].join('\n'),
+    hotel: [
+      '呢張係一張酒店訂房確認。',
+      'name：酒店名稱本身，唔好要訂單編號、排名標籤（例如「精選4星級酒店第3名」）或者任何按鈕文字。',
+      'checkIn / checkOut：入住同退房日期。小心分辨——「免費取消期限」同「訂購日期」都唔係入住日期。',
+      'address：酒店地址，冇就留空字串。',
+      'amount：已付款金額。唔好攞「Trip Coins 節省」嗰啲回贈金額。'
+    ].join('\n'),
+    itinerary: [
+      '呢張係一張機票／車票／門票／活動訂單。',
+      'title：簡短描述，例如「香港（HKG）→ 曼谷（BKK） TG603」或者活動名稱。唔好用訂單編號。',
+      'date：出發／活動日期。',
+      'time：出發／開始時間，24 小時制 HH:MM，唔知就寫 12:00。',
+      'category：由呢幾個揀一個 —— 景點、餐飲、交通、住宿、購物、活動。'
+    ].join('\n')
+  };
+  function geminiPromptFor(kind){
+    return [
+      '你係一個幫手讀旅遊單據嘅助手。睇下呢張相，抽出下面嘅資料。',
+      GEMINI_RULES_BY_KIND[kind] || '',
+      '',
+      '所有日期一律用 YYYY-MM-DD 格式。任何一項如果張相入面真係冇或者睇唔清，就留空字串（數字就用 0），千祈唔好作。',
+      '只可以回覆一個 JSON object，唔好有任何解釋或者 markdown：',
+      GEMINI_SCHEMA_BY_KIND[kind] || GEMINI_SCHEMA_BY_KIND.receipt
+    ].join('\n');
+  }
+  function runGeminiScan(dataUrl){
+    var kind = scanDraft.kind;
+    var base64 = String(dataUrl).replace(/^data:[^;]+;base64,/, '');
+    scanDraft.busy = true; scanDraft.error = ''; scanDraft.engine = 'gemini';
+    renderModalOnly();
+    resolveGeminiModel().then(function(model){
+      return fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + encodeURIComponent(geminiKey), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [ { text: geminiPromptFor(kind) }, { inline_data: { mime_type: 'image/jpeg', data: base64 } } ] }],
+          generationConfig: { temperature: 0, responseMimeType: 'application/json' }
+        })
+      });
+    }).then(function(r){
+      return r.json().then(function(j){ if (!r.ok) throw new Error(geminiErrorMessage(j)); return j; });
+    }).then(function(j){
+      var cand = j && j.candidates && j.candidates[0];
+      var txt = cand && cand.content && cand.content.parts && cand.content.parts[0] && cand.content.parts[0].text;
+      if (!txt) throw new Error('AI 冇回覆到內容，請再試一次。');
+      applyGeminiResult(txt, kind);
+      scanDraft.busy = false;
+      renderModalOnly();
+    }).catch(function(err){
+      scanDraft.busy = false;
+      scanDraft.error = 'AI 掃描失敗：' + (err && err.message ? err.message : '未知錯誤') + '（你可以喺下面貼文字代替）';
+      renderModalOnly();
+    });
+  }
+  function applyGeminiResult(rawText, kind){
+    var obj;
+    try { obj = JSON.parse(rawText); }
+    catch(e){
+      var m = /\{[\s\S]*\}/.exec(rawText);
+      if (!m) throw new Error('AI 回覆格式唔啱。');
+      obj = JSON.parse(m[0]);
+    }
+    var clean = function(v){ return (v === undefined || v === null) ? '' : String(v).trim(); };
+    var num = function(v){ var n = Number(v); return (isNaN(n) || n <= 0) ? '' : n; };
+    if (kind === 'receipt'){
+      scanDraft.parsed = { title: clean(obj.title), amount: num(obj.amount), currency: clean(obj.currency) || 'HKD', date: clean(obj.date) };
+    } else if (kind === 'hotel'){
+      var notes = [];
+      if (num(obj.amount)) notes.push('金額參考：' + (clean(obj.currency) || '') + num(obj.amount));
+      if (clean(obj.address)) notes.push('地址：' + clean(obj.address));
+      scanDraft.parsed = { name: clean(obj.name), checkIn: clean(obj.checkIn), checkOut: clean(obj.checkOut), notes: notes.join('\n') };
+    } else {
+      scanDraft.parsed = { title: clean(obj.title), date: clean(obj.date), time: clean(obj.time) || '12:00', category: clean(obj.category) || '景點' };
+    }
+    // keep a readable trace so the user can see what the AI actually read
+    scanDraft.rawText = JSON.stringify(obj, null, 2);
+  }
+
   // ---- best-effort text parsing helpers — everything they find is a GUESS
   // shown for the user to review, never written straight into trip data ----
   function scanPad2(n){ n = String(n); return n.length<2 ? '0'+n : n; }
   var SCAN_MONTHS = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,
     january:1,february:2,march:3,april:4,june:6,july:7,august:8,september:9,october:10,november:11,december:12};
-  // "Booking Date" / 訂購日期 etc. is when the order was PLACED, not the
-  // travel/stay/purchase date we actually want — matches shortly after that
-  // phrase are kept as a low-priority fallback instead of the first guess.
-  var SCAN_DATE_NOISE = /(booking date|order date|purchase date|訂購日期|落單日期|下單日期|訂單日期)\s*[:：]?\s*$/i;
+  // "Booking Date" / 訂購日期 etc. is when the order was PLACED, and a
+  // cancellation-deadline date ("您可以在 2026年12月1日 前免費取消") is neither
+  // the placed date nor the actual stay/travel date we actually want —
+  // matches shortly after any of these phrases are kept as a low-priority
+  // fallback instead of the first guess.
+  var SCAN_DATE_NOISE = /(booking date|order date|purchase date|訂購日期|落單日期|下單日期|訂單日期|您可以在|免費取消|取消政策|不設退款)\s*[:：]?\s*$/i;
+  // a hotel-stay range almost always appears as ONE line — "2026年12月3日
+  // 週四—12月5日 週六" or "December 3 - December 5, 2026" — where the second
+  // date usually omits the year (and sometimes the month). Matching the
+  // WHOLE range in one go is far more reliable than picking two unrelated
+  // dates out of scanFindDates(), which can just as easily grab a
+  // cancellation-policy date instead of the real check-out date.
+  // a 2-digit year on a receipt is always "this century" in practice
+  function scanYear2(y){ y = Number(y); return String(y < 70 ? 2000 + y : 1900 + y); }
+  function scanFindDateRange(text){
+    // explicit check-in / check-out labels win over any positional guess
+    var ci = /(?:入住|checkin|check-in|check in)\s*(?:日期)?\s*[:：]?\s*([^\n]{4,24})/i.exec(text);
+    var co = /(?:退房|checkout|check-out|check out)\s*(?:日期)?\s*[:：]?\s*([^\n]{4,24})/i.exec(text);
+    if (ci && co){
+      var ciD = scanFindDates(ci[1])[0], coD = scanFindDates(co[1])[0];
+      if (ciD && coD) return { checkIn: ciD, checkOut: coD };
+    }
+    // "2026年12月3日 週四—12月5日 週六" — the 2nd date usually drops the year
+    // (and sometimes the month too), so match the WHOLE range in one go
+    var m = /(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日[^\d\n]{0,12}(?:(\d{1,2})月\s*)?(\d{1,2})日/.exec(text);
+    if (m){
+      var y=m[1], mo1=scanPad2(m[2]), d1=scanPad2(m[3]), mo2=m[4]?scanPad2(m[4]):scanPad2(m[2]), d2=scanPad2(m[5]);
+      return { checkIn: y+'-'+mo1+'-'+d1, checkOut: y+'-'+mo2+'-'+d2 };
+    }
+    // "December 3 - December 5, 2026" / "Dec 3 – 5, 2026"
+    m = /([A-Za-z]{3,9})\s+(\d{1,2})\s*[-–—~至到]\s*([A-Za-z]{3,9})?\s*(\d{1,2}),?\s+(\d{4})/.exec(text);
+    if (m){
+      var mon1 = SCAN_MONTHS[m[1].toLowerCase()], mon2 = m[3] ? SCAN_MONTHS[m[3].toLowerCase()] : mon1;
+      if (mon1 && mon2){
+        return { checkIn: m[5]+'-'+scanPad2(mon1)+'-'+scanPad2(m[2]), checkOut: m[5]+'-'+scanPad2(mon2)+'-'+scanPad2(m[4]) };
+      }
+    }
+    // last resort: any single line that carries two full dates
+    var lines = text.split('\n');
+    for (var i=0;i<lines.length;i++){
+      var found = scanFindDates(lines[i]);
+      if (found.length >= 2) return { checkIn: found[0], checkOut: found[1] };
+    }
+    return null;
+  }
   function scanFindDates(text){
-    var primary = [], fallback = [], m;
+    var primary = [], fallback = [], seen = {}, m;
     function push(idx, value){
+      if (seen[value+'@'+idx]) return;
+      seen[value+'@'+idx] = 1;
       var before = text.slice(Math.max(0, idx-24), idx);
       if (SCAN_DATE_NOISE.test(before)) fallback.push(value); else primary.push(value);
     }
     var re1 = /([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})/g;
     while ((m = re1.exec(text))){ var mon=SCAN_MONTHS[m[1].toLowerCase()]; if (mon) push(m.index, m[3]+'-'+scanPad2(mon)+'-'+scanPad2(m[2])); }
-    var re2 = /\b(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})\b/g;
+    var re2 = /\b(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})\b/g;
     while ((m = re2.exec(text))){ push(m.index, m[1]+'-'+scanPad2(m[2])+'-'+scanPad2(m[3])); }
-    var re3 = /\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\b/g;
+    var re3 = /\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})\b/g;
     while ((m = re3.exec(text))){ push(m.index, m[3]+'-'+scanPad2(m[2])+'-'+scanPad2(m[1])); }
+    // 2-digit-year forms, e.g. a HK receipt's "Date: 29/08/26" (DD/MM/YY).
+    // Without this the commonest receipt date format was matched by NOTHING,
+    // which is why receipts always came back with an empty date field.
+    var re3b = /\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2})\b(?!\d)/g;
+    while ((m = re3b.exec(text))){
+      var a = Number(m[1]), b = Number(m[2]);
+      if (a >= 1 && a <= 31 && b >= 1 && b <= 12) push(m.index, scanYear2(m[3])+'-'+scanPad2(b)+'-'+scanPad2(a));
+    }
     var re4 = /(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日/g;
     while ((m = re4.exec(text))){ push(m.index, m[1]+'-'+scanPad2(m[2])+'-'+scanPad2(m[3])); }
     return primary.concat(fallback);
@@ -2164,24 +2421,161 @@
     return m ? {fromCity:m[1].trim(), fromCode:m[2], toCity:m[3].trim(), toCode:m[4]} : null;
   }
   function scanFindFlightNo(text){ var m = /\b([A-Z]{2}\s?\d{2,4})\b/.exec(text); return m ? m[1].replace(/\s/g,'') : ''; }
+  var SCAN_CURRENCY_CODES = 'HKD|USD|JPY|TWD|CNY|RMB|KRW|THB|SGD|GBP|EUR|AUD|MOP|VND|MYR|PHP|IDR|CAD|CHF|NZD';
+  var SCAN_TOTAL_LINE = /(total|amount due|grand total|subtotal|已付款|實付|应付|應付|總額|总额|總計|总计|合計|合计|金額|金额)/i;
+  // lines whose numbers are identifiers, not money — transaction/slip/approval
+  // numbers and card digits used to win the "largest number" contest and get
+  // filled in as the expense amount.
+  var SCAN_AMOUNT_NOISE = /(slip|staff|trans|approval|invoice|receipt no|order no|booking no|ref|card|barcode|number of items|item[s]?\s*[:：]|訂單編號|單號|交易|編號|會員|電話|\*{3,})/i;
+  // "Trip Coins 節省 HK$3.92" is a rebate, not what was paid
+  var SCAN_REBATE = /(coins|節省|节省|reward|earn|discount|折扣|優惠|saved)/i;
+  function scanMoneyInLine(line){
+    var out = [], m;
+    var reSym = /(HK\$|NT\$|US\$|RMB|R\$|¥|£|€|\$)\s?(\d[\d,]*(?:\.\d{1,2})?)/g;
+    while ((m = reSym.exec(line))){
+      var v = Number(m[2].replace(/,/g, ''));
+      if (!isNaN(v)) out.push({ symbol: m[1], code: '', amount: v });
+    }
+    var reCode = new RegExp('\\b(' + SCAN_CURRENCY_CODES + ')\\b\\s*[:：]?\\s*(\\d[\\d,]*(?:\\.\\d{1,2})?)', 'gi');
+    while ((m = reCode.exec(line))){
+      var v2 = Number(m[2].replace(/,/g, ''));
+      if (!isNaN(v2)) out.push({ symbol: '', code: m[1].toUpperCase(), amount: v2 });
+    }
+    // also "13.0" sitting alone on a Total line with the code before it
+    if (!out.length){
+      var reBare = /(?:^|\s)(\d[\d,]*\.\d{1,2})(?=\s|$)/g;
+      while ((m = reBare.exec(line))){
+        var v3 = Number(m[1].replace(/,/g, ''));
+        if (!isNaN(v3)) out.push({ symbol: '', code: '', amount: v3 });
+      }
+    }
+    return out.filter(function (x) { return x.amount > 0; });
+  }
   function scanFindAmount(text){
-    var best = null, bestVal = -1, m;
-    var re = /(HK\$|NT\$|US\$|R\$|¥|£|€|\$)\s?([\d,]+(?:\.\d{1,2})?)/g;
-    while ((m = re.exec(text))){ var v=Number(m[2].replace(/,/g,'')); if (!isNaN(v) && v>bestVal){ bestVal=v; best={symbol:m[1], amount:v}; } }
-    if (!best){
-      var re2 = /\b(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+\.\d{2})\b/g;
-      while ((m = re2.exec(text))){ var v2=Number(m[1].replace(/,/g,'')); if (!isNaN(v2) && v2>bestVal){ bestVal=v2; best={symbol:'', amount:v2}; } }
+    var lines = text.split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
+    var codeHint = '';
+    var cm = new RegExp('\\b(' + SCAN_CURRENCY_CODES + ')\\b', 'i').exec(text);
+    if (cm) codeHint = cm[1].toUpperCase();
+    // 1. a line that actually says it is the total — by far the most reliable
+    for (var i = 0; i < lines.length; i++){
+      if (!SCAN_TOTAL_LINE.test(lines[i]) || SCAN_REBATE.test(lines[i]) || SCAN_AMOUNT_NOISE.test(lines[i])) continue;
+      var hits = scanMoneyInLine(lines[i]);
+      if (hits.length){
+        var pick = hits.reduce(function (a, b) { return b.amount > a.amount ? b : a; });
+        if (!pick.code && !pick.symbol && codeHint) pick.code = codeHint;
+        return pick;
+      }
+    }
+    // 2. otherwise the largest money-looking value, ignoring identifier lines
+    var best = null;
+    lines.forEach(function (line) {
+      if (SCAN_AMOUNT_NOISE.test(line) || SCAN_REBATE.test(line)) return;
+      scanMoneyInLine(line).forEach(function (h) {
+        if (!h.code && !h.symbol && codeHint) h.code = codeHint;
+        if (!best || h.amount > best.amount) best = h;
+      });
+    });
+    return best;
+  }
+  function scanGuessCurrency(hit){
+    if (!hit) return 'HKD';
+    if (hit.code) return hit.code === 'RMB' ? 'CNY' : hit.code;
+    var map = {'HK$':'HKD','NT$':'TWD','US$':'USD','$':'USD','¥':'JPY','£':'GBP','€':'EUR','R$':'BRL','RMB':'CNY'};
+    return map[hit.symbol] || 'HKD';
+  }
+  function scanFormatMoney(hit){
+    if (!hit) return '';
+    return (hit.symbol || (hit.code ? hit.code + ' ' : '')) + hit.amount;
+  }
+  // booking-confirmation screenshots (Trip.com and similar) are full of
+  // chrome text ABOVE the actual title — order/PIN numbers, badges, "paid",
+  // cancellation terms, action buttons — none of which is what the user
+  // wants filled in. This list is what "first meaningful line" actually
+  // needs to skip past to reach the real title.
+  var SCAN_LINE_NOISE = /booking no\.?|order no\.?|pin\s*碼|confirmed|in \d+ days?|^notice$|trip coins|you'll earn|request ticket|^\d+$|^\d{1,2}:\d{2}$|^[.\d\s%]+$|訂單編號|pin\s*碼|最低價格保證|酒店入住保障|入住保障|價格保證|已付款|已使用|已用|節省|價格詳情|現在可|您可以在|取消政策|免費取消|不設退款|入住[：:]|退房[：:]|修改日期|發送訊息|電話及電郵|住宿詳情|查看地圖|當地語言地址|管理訂單|取消訂單|延長住宿|^位置$|^地址$|^notice/i;
+  function scanFirstMeaningfulLine(text){
+    var lines = text.split('\n').map(function(l){ return l.trim(); }).filter(function(l){ return l.length>=2 && !SCAN_LINE_NOISE.test(l); });
+    return lines[0] || '';
+  }
+  // hotel names reliably contain "酒店/飯店/Hotel/Resort/Inn" — searching for
+  // that keyword directly skips straight past all the chrome text above it,
+  // instead of relying on "first non-noise line" which still tends to catch
+  // whichever chrome line the noise list doesn't yet know about.
+  var SCAN_HOTEL_NAME_HINT = /(酒店|飯店|賓館|hotel|resort|hostel|inn\b|guesthouse)/i;
+  var SCAN_HOTEL_NAME_NOISE = /第\s*\d+\s*名|精選|入住保障|價格保證/;
+  function scanFindHotelName(text){
+    var lines = text.split('\n').map(function(l){ return l.trim(); }).filter(function(l){ return l.length>=2; });
+    for (var i=0;i<lines.length;i++){
+      if (SCAN_HOTEL_NAME_HINT.test(lines[i]) && !SCAN_HOTEL_NAME_NOISE.test(lines[i]) && !SCAN_LINE_NOISE.test(lines[i])) return lines[i];
+    }
+    return scanFirstMeaningfulLine(text);
+  }
+  // ---- receipts: shop name + what was actually bought ----
+  // A till receipt's own header lines (Slip / Staff / Trans / Date / card
+  // digits / the thank-you footer) are all noise; the shop name is the first
+  // real line, and the purchased item sits on a line of its own, usually
+  // prefixed by a barcode/SKU number and followed by its price.
+  var SCAN_RECEIPT_NOISE = /^(slip|staff|trans|date|time|description|amount|items?|total|subtotal|change|cash|visa|master|unionpay|payme|octopus|approval|invoice|tel|no signature|welcome|thank|歡迎|欢迎|打造|多謝|多谢|謝謝|谢谢|請保留|请保留|簽名|签名|收據|收据|發票|发票|統一編號|统一编号)\b/i;
+  var SCAN_RECEIPT_NOISE_ANY = /(\*{3,}|approval code|no signature|qr code|number of items|master card|visa|scan the qr|feedback|顧客體驗|顾客体验|意見|意见)/i;
+  function scanReceiptLines(text){
+    return text.split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
+  }
+  function scanFindMerchant(text){
+    var lines = scanReceiptLines(text);
+    for (var i = 0; i < lines.length; i++){
+      var l = lines[i];
+      if (l.length < 2) continue;
+      if (/^\d[\d\s.,:*\/-]*$/.test(l)) continue;          // pure numbers / times
+      if (SCAN_RECEIPT_NOISE.test(l) || SCAN_RECEIPT_NOISE_ANY.test(l)) continue;
+      if (SCAN_LINE_NOISE.test(l)) continue;
+      if (/^[-=_.\s]+$/.test(l)) continue;                  // separator rules
+      return l.replace(/\s{2,}/g, ' ');
+    }
+    return '';
+  }
+  function scanFindReceiptItem(text){
+    var lines = scanReceiptLines(text);
+    var best = '';
+    for (var i = 0; i < lines.length; i++){
+      var l = lines[i];
+      if (SCAN_RECEIPT_NOISE_ANY.test(l)) continue;
+      // "798846212 麥芽酸種麵包    13.0 A"  → the middle is the item name
+      var m = /^\d{4,}\s+(.{2,40}?)\s+\d[\d,]*(?:\.\d{1,2})?\s*[A-Za-z]?$/.exec(l);
+      if (m && !/^\d+$/.test(m[1].trim())){ return m[1].trim().replace(/\s{2,}/g, ' '); }
+      // a line right after an "Items:" header
+      if (/^items?\s*[:：]?$/i.test(l) && lines[i+1]){
+        var next = lines[i+1].replace(/^\d{4,}\s*/, '').replace(/\s+\d[\d,]*(?:\.\d{1,2})?\s*[A-Za-z]?$/, '').trim();
+        if (next.length >= 2 && !/^\d+$/.test(next)) return next.replace(/\s{2,}/g, ' ');
+      }
+      // generic "<name> <price>" line, kept only as a weaker fallback
+      if (!best){
+        var g = /^([^\d][^\n]{1,38}?)\s+\d[\d,]*\.\d{1,2}\s*[A-Za-z]?$/.exec(l);
+        if (g && !SCAN_RECEIPT_NOISE.test(g[1]) && !SCAN_TOTAL_LINE.test(g[1])) best = g[1].trim();
+      }
     }
     return best;
   }
-  function scanGuessCurrency(symbol){
-    var map = {'HK$':'HKD','NT$':'TWD','US$':'USD','$':'USD','¥':'JPY','£':'GBP','€':'EUR','R$':'BRL'};
-    return map[symbol] || 'HKD';
-  }
-  function scanFirstMeaningfulLine(text){
-    var noise = /booking no\.?|confirmed|in \d+ days?|notice|trip coins|you'll earn|request ticket|^\d+$/i;
-    var lines = text.split('\n').map(function(l){ return l.trim(); }).filter(function(l){ return l.length>=2 && !noise.test(l); });
-    return lines[0] || '';
+  // the address sits right after a "位置/地址/Location/Address" label in
+  // these screenshots, or otherwise looks like "<number> <street>, <area>".
+  // an address names a street/district; requiring one of those words keeps
+  // the loose "<number> ..., ..." fallback from swallowing prose that merely
+  // happens to contain a number and a comma (a cancellation policy, say).
+  var SCAN_ADDRESS_HINT = /(alley|street|st\.|road|rd\.|avenue|ave\.|lane|soi|blvd|district|floor|巷|街|路|道|區|区|里|號|号|樓|楼|層|层)/i;
+  function scanFindAddress(text){
+    var lines = text.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+    for (var i=0;i<lines.length;i++){
+      if (/^(位置|地址|location|address)[:：]?$/i.test(lines[i]) && lines[i+1]) return lines[i+1];
+      var inline = /^(?:位置|地址|location|address)\s*[:：]\s*(.+)$/i.exec(lines[i]);
+      if (inline && inline[1].trim().length >= 4) return inline[1].trim();
+    }
+    for (var j=0;j<lines.length;j++){
+      var l = lines[j];
+      if (l.length < 6 || l.length > 90) continue;
+      if (SCAN_LINE_NOISE.test(l) || SCAN_DATE_NOISE.test(l)) continue;
+      if (/(免費取消|不設退款|取消政策|您可以在|退款)/.test(l)) continue;
+      if (/[,，]/.test(l) && SCAN_ADDRESS_HINT.test(l) && /\d/.test(l)) return l;
+    }
+    return '';
   }
   function parseScanText(){
     var d = scanDraft, text = d.rawText || '';
@@ -2191,9 +2585,29 @@
       var title = route ? (route.fromCity+'（'+route.fromCode+'）→ '+route.toCity+'（'+route.toCode+'）'+(flightNo?(' '+flightNo):'')) : scanFirstMeaningfulLine(text);
       d.parsed = { title:title, date: dates[0]||'', time: times[0]||'12:00', category: route ? '交通' : '景點' };
     } else if (d.kind === 'hotel'){
-      d.parsed = { name: scanFirstMeaningfulLine(text), checkIn: dates[0]||'', checkOut: dates[1]||'', notes: amt ? ('金額參考：'+(amt.symbol||'')+amt.amount) : '' };
+      var range = scanFindDateRange(text);
+      var address = scanFindAddress(text);
+      var notesParts = [];
+      if (amt) notesParts.push('金額參考：'+scanFormatMoney(amt));
+      if (address) notesParts.push('地址：'+address);
+      d.parsed = {
+        name: scanFindHotelName(text),
+        checkIn: range ? range.checkIn : (dates[0]||''),
+        checkOut: range ? range.checkOut : (dates[1]||''),
+        notes: notesParts.join('\n')
+      };
     } else if (d.kind === 'receipt'){
-      d.parsed = { title: scanFirstMeaningfulLine(text), amount: amt?amt.amount:'', currency: amt?scanGuessCurrency(amt.symbol):'HKD', date: dates[0]||'' };
+      // "IKEA 麥芽酸種麵包" reads far better than either half alone, so use
+      // the shop name AND the purchased item whenever both can be found.
+      var merchant = scanFindMerchant(text);
+      var item = scanFindReceiptItem(text);
+      var receiptTitle = (merchant && item) ? (merchant + ' ' + item) : (merchant || item || scanFirstMeaningfulLine(text));
+      d.parsed = {
+        title: receiptTitle,
+        amount: amt ? amt.amount : '',
+        currency: scanGuessCurrency(amt),
+        date: dates[0] || ''
+      };
     }
   }
   function applyScanResult(){
@@ -2239,6 +2653,23 @@
   function renderScanModal(){
     if (!scanDraft) scanDraft = freshScanDraft();
     var d = scanDraft;
+    if (d.showKeySetup){
+      return '' +
+        '<div class="sheet-handle"></div>' +
+        '<span class="close-x" data-action="closeModal">'+icon('close',20)+'</span>' +
+        '<div class="sheet-title">開啟 AI 視覺辨識</div>' +
+        '<div style="font-size:12.5px;color:var(--muted);margin:-6px 0 14px 0;">用 Google 嘅 Gemini 免費層，準確度遠勝基本 OCR。<b>唔使綁信用卡</b>，貼一次就得，之後會跟住你嘅同步資料去到其他裝置。</div>' +
+        '<div style="font-size:12.5px;color:var(--ink);margin-bottom:12px;line-height:1.7;">' +
+          '1. 開 <b>aistudio.google.com/apikey</b><br>' +
+          '2. 用 Google 戶口登入，撳「建立 API 金鑰」<br>' +
+          '3. 複製出嚟，貼落下面' +
+        '</div>' +
+        '<div class="field"><label>Gemini API key</label><input type="text" id="scan-gemini-key" value="'+(d.keyInput||'')+'" placeholder="AIza..." autocomplete="off"></div>' +
+        '<div class="scan-guess-hint">免費層嘅內容會俾 Google 用嚟改善佢哋嘅產品，敏感嘅單據就唔好掃。個 key 唔會放入公開程式碼。</div>' +
+        '<button type="button" class="btn-primary" style="width:100%;margin-bottom:10px;" data-action="saveGeminiKey">儲存並開啟</button>' +
+        (geminiKey ? '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:10px;color:var(--negative);" data-action="clearGeminiKey">移除 key，改返用基本 OCR</button>' : '') +
+        '<div class="modal-actions"><button class="btn-secondary" data-action="closeGeminiKeySetup" style="width:100%;">返回</button></div>';
+    }
     if (!d.kind){
       return '' +
         '<div class="sheet-handle"></div>' +
@@ -2275,13 +2706,19 @@
       '<span class="close-x" data-action="closeModal">'+icon('close',20)+'</span>' +
       '<div class="sheet-title">AI 掃描 · '+kindLabel+'</div>' +
       '<button type="button" class="link-btn" data-action="resetScanKind" style="margin:-8px 0 14px 0;">← 重新揀類型</button>' +
-      '<div class="field"><label>相片語言（可揀多種）</label><div style="display:flex;flex-wrap:wrap;gap:6px;">'+langChips+'</div></div>' +
-      '<div class="field"><label>其他語言代碼（Tesseract 語言碼，逗號分開，例如 spa,deu；非必填）</label><input type="text" id="scan-extra-langs" value="'+(d.extraLangs||'')+'"></div>' +
-      '<div class="field"><label>1. 上傳相片（或者跳過，直接喺下面貼上文字）</label><input type="file" accept="image/*" id="scan-file"></div>' +
-      (d.busy ? '<div class="hint" style="color:var(--muted);">🔄 OCR 掃描緊，請稍等（第一次用需要下載語言包，可能需時）...</div>' : '') +
+      (geminiKey
+        ? ('<div class="hint" style="color:var(--positive);margin:-6px 0 14px 0;">✓ 已開啟 AI 視覺辨識 — 影完相直接出結果，唔使揀語言。<button type="button" class="link-btn" data-action="openGeminiKeySetup" style="padding:0;margin-left:6px;">更改 key</button></div>')
+        : ('<div class="scan-guess-hint">而家用緊基本 OCR，影歪或者細字好易認錯。<b>免費開啟 AI 視覺辨識</b>準確好多。<button type="button" class="link-btn" data-action="openGeminiKeySetup" style="padding:0;margin-left:6px;">立即開啟</button></div>')
+      ) +
+      (geminiKey ? '' :
+        '<div class="field"><label>相片語言（可揀多種）</label><div style="display:flex;flex-wrap:wrap;gap:6px;">'+langChips+'</div></div>' +
+        '<div class="field"><label>其他語言代碼（Tesseract 語言碼，逗號分開，例如 spa,deu；非必填）</label><input type="text" id="scan-extra-langs" value="'+(d.extraLangs||'')+'"></div>'
+      ) +
+      '<div class="field"><label>1. 影相／揀相'+(geminiKey?'（AI 會直接讀出欄位）':'（或者跳過，直接喺下面貼上文字）')+'</label><input type="file" accept="image/*" id="scan-file"></div>' +
+      (d.busy ? ('<div class="hint" style="color:var(--muted);">🔄 '+(d.engine==='gemini'?'AI 讀緊張相，通常幾秒...':'OCR 掃描緊，第一次用要下載語言包，可能需時...')+'</div>') : '') +
       (d.error ? '<div class="scan-guess-hint">'+d.error+'</div>' : '') +
-      '<div class="field"><label>2. 識別文字（可手動修改，或者直接貼文字上嚟都得）</label><textarea id="scan-rawtext" rows="5" placeholder="OCR 結果會顯示喺度，你都可以自己貼文字上嚟">'+(d.rawText||'')+'</textarea></div>' +
-      '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:14px;" data-action="reparseScanText">3. 自動解析文字</button>' +
+      '<div class="field"><label>2. '+(geminiKey?'AI 讀到嘅內容（可手動修改）':'識別文字（可手動修改，或者直接貼文字上嚟都得）')+'</label><textarea id="scan-rawtext" rows="5" placeholder="結果會顯示喺度，你都可以自己貼文字上嚟">'+(d.rawText||'')+'</textarea></div>' +
+      '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:14px;" data-action="reparseScanText">3. 由上面嘅文字重新解析</button>' +
       (p ? ('<div class="scan-guess-hint">⚠️ AI 猜測結果，套用之前請覆核清楚：</div>'+guessHTML) : '') +
       '<div class="modal-actions">' +
         '<button class="btn-secondary" data-action="closeModal">取消</button>' +
@@ -2716,18 +3153,39 @@
       firebaseSavedConfigText = cfgTxt;
       try{ localStorage.setItem(FIREBASE_CONFIG_KEY, cfgTxt); } catch(err){}
       syncDraft.configText = cfgTxt;
+      syncDraft.showAdvanced = false;
       renderModalOnly();
       return;
     }
     if (action === 'resetFirebaseConfig'){
       firebaseSavedConfigText = '';
       try{ localStorage.removeItem(FIREBASE_CONFIG_KEY); } catch(err){}
+      syncDraft.configText = '';
+      syncDraft.showAdvanced = false;
       renderModalOnly();
+      return;
+    }
+    if (action === 'showSyncAdvanced'){ syncDraft.showAdvanced = true; renderModalOnly(); return; }
+    if (action === 'hideSyncAdvanced'){ syncDraft.showAdvanced = false; renderModalOnly(); return; }
+    if (action === 'copySyncLink'){
+      var linkEl = document.getElementById('sync-share-link');
+      var linkText = linkEl ? linkEl.value : syncShareLink();
+      var markCopied = function(){ syncDraft.copied = true; renderModalOnly(); };
+      if (navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(linkText).then(markCopied).catch(function(){
+          if (linkEl){ linkEl.select(); }
+          showAlert('複製唔到，請自己長按揀走條連結。');
+        });
+      } else if (linkEl){
+        linkEl.select();
+        try{ document.execCommand('copy'); markCopied(); }
+        catch(err){ showAlert('複製唔到，請自己長按揀走條連結。'); }
+      }
       return;
     }
     if (action === 'createSyncCode'){
       var newCode = generateSyncCode();
-      connectFirebase(firebaseSavedConfigText, newCode, false);
+      connectFirebase(activeFirebaseConfigText(), newCode, false);
       pushFirebaseNow();
       renderModalOnly();
       return;
@@ -2737,7 +3195,7 @@
       var joinCode = joinEl ? joinEl.value.trim().toUpperCase() : '';
       if (!joinCode){ showAlert('請輸入同步代碼。'); return; }
       showConfirm('加入同步之後，呢部裝置依家嘅資料會俾同步代碼嗰邊嘅資料覆蓋，確定要繼續？', function(){
-        connectFirebase(firebaseSavedConfigText, joinCode, false);
+        connectFirebase(activeFirebaseConfigText(), joinCode, false);
         renderModalOnly();
       });
       return;
@@ -2745,6 +3203,35 @@
     if (action === 'manualFirebasePush'){ pushFirebaseNow(); return; }
     if (action === 'stopFirebaseSyncAction'){
       showConfirm('停止之後，呢部裝置唔會再自動同步（其他裝置唔受影響），確定？', function(){ stopFirebaseSync(); closeModal(); });
+      return;
+    }
+    if (action === 'openGeminiKeySetup'){
+      syncScanTextFromDOM();
+      scanDraft.keyInput = geminiKey || '';
+      scanDraft.showKeySetup = true;
+      renderModalOnly();
+      return;
+    }
+    if (action === 'closeGeminiKeySetup'){ scanDraft.showKeySetup = false; renderModalOnly(); return; }
+    if (action === 'saveGeminiKey'){
+      var keyEl = document.getElementById('scan-gemini-key');
+      var keyVal = keyEl ? keyEl.value.trim() : '';
+      if (!keyVal){ showAlert('請貼上 API key。'); return; }
+      setGeminiKey(keyVal);
+      geminiModelName = '';
+      scanDraft.showKeySetup = false;
+      scanDraft.error = '';
+      markDirty();          // carry the key to this user's other devices
+      renderModalOnly();
+      return;
+    }
+    if (action === 'clearGeminiKey'){
+      setGeminiKey('');
+      geminiModelName = '';
+      scanDraft.keyInput = '';
+      scanDraft.showKeySetup = false;
+      markDirty();
+      renderModalOnly();
       return;
     }
     if (action === 'setScanKind'){ syncScanTextFromDOM(); scanDraft.kind = el.getAttribute('data-key'); renderModalOnly(); return; }
@@ -3101,7 +3588,10 @@
       readAndResizeImageFile(el.files[0], function(dataUrl){ tripCoverDraft.photo = dataUrl; tripCoverDraft.color = null; renderModalOnly(); }, {width:640, height:360, quality:0.75});
     }
     if (el.id === 'scan-file' && el.files && el.files[0]){
-      readImageFileForOCR(el.files[0], function(dataUrl){ runScanOCR(dataUrl); });
+      readImageFileForOCR(el.files[0], function(dataUrl){
+        if (geminiKey) runGeminiScan(dataUrl);
+        else runScanOCR(dataUrl);
+      });
     }
     if (el.id === 'f-currency'){ syncExpenseDraftFromDOM(); expenseDraft.currency = el.value; renderModalOnly(); }
   });
@@ -3247,6 +3737,7 @@
     closeModal();
   }
 
+  loadGeminiKeyFromStorage();
   loadPersistedState();
   initArtifactCapability();
   initFirebaseIfConfigured();
