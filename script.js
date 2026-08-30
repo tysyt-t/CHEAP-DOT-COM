@@ -701,6 +701,19 @@
   // for a small trip-planning app.
   var FIREBASE_CONFIG_KEY = 'tripWallet_firebaseConfig';
   var FIREBASE_SYNCCODE_KEY = 'tripWallet_syncCode';
+  // Built-in project so nobody has to set up Firebase to sync. A Firebase web
+  // config is public by design (it identifies the project, it is not a
+  // secret) — what actually guards the data is the sync code, which is why
+  // the code must be treated like a private link and never posted publicly.
+  // Anyone who prefers their own project can still override this below.
+  var DEFAULT_FIREBASE_CONFIG = {
+    apiKey: "AIzaSyBjqWJqGC3-TV07oYv28dP3yvOt8bTgg6w",
+    authDomain: "trip-wallet-sync.firebaseapp.com",
+    projectId: "trip-wallet-sync",
+    storageBucket: "trip-wallet-sync.firebasestorage.app",
+    messagingSenderId: "650211141696",
+    appId: "1:650211141696:web:5e580fc6fa317a3834d7a5"
+  };
   var firebaseApp = null, firebaseDb = null, firebaseUnsub = null;
   var firebaseSavedConfigText = '';
   var firebaseSyncCode = null;
@@ -716,6 +729,34 @@
     return null;
   }
 
+  function activeFirebaseConfigText(){
+    return firebaseSavedConfigText || JSON.stringify(DEFAULT_FIREBASE_CONFIG);
+  }
+  function usingOwnFirebaseProject(){ return !!firebaseSavedConfigText; }
+
+  // The sync code also lives in the URL, so opening the same link on another
+  // device — or in a private window, where localStorage is wiped every time —
+  // reconnects to the same data with nothing to set up and nothing to retype.
+  function syncCodeFromURL(){
+    try{
+      var h = (window.location.hash || '').replace(/^#/, '');
+      var m = /(?:^|&)(?:sync|trip)=([A-Za-z0-9-]{4,24})/.exec(h);
+      return m ? m[1].toUpperCase() : null;
+    } catch(err){ return null; }
+  }
+  function writeSyncCodeToURL(code){
+    try{
+      if (code) window.location.replace('#sync=' + code);
+      else if (window.location.hash) window.location.replace('#');
+    } catch(err){ /* some embedded webviews block hash writes — harmless */ }
+  }
+  function syncShareLink(){
+    if (!firebaseSyncCode) return '';
+    try{
+      return window.location.origin + window.location.pathname + '#sync=' + firebaseSyncCode;
+    } catch(err){ return '#sync=' + firebaseSyncCode; }
+  }
+
   function loadFirebaseSettingsFromStorage(){
     try{
       var cfgRaw = localStorage.getItem(FIREBASE_CONFIG_KEY);
@@ -727,8 +768,12 @@
 
   function initFirebaseIfConfigured(){
     loadFirebaseSettingsFromStorage();
-    if (!firebaseSavedConfigText || !firebaseSyncCode) return;
-    connectFirebase(firebaseSavedConfigText, firebaseSyncCode, true);
+    // a code in the link always wins — that is how a shared link is meant to
+    // hand this device the right trip, even over whatever it synced last.
+    var urlCode = syncCodeFromURL();
+    var code = urlCode || firebaseSyncCode;
+    if (!code) return;
+    connectFirebase(activeFirebaseConfigText(), code, true);
   }
 
   function connectFirebase(configText, code, isAutoStart){
@@ -756,9 +801,12 @@
       firebaseSyncStatus = 'connecting';
       firebaseSyncError = '';
       try{
-        localStorage.setItem(FIREBASE_CONFIG_KEY, configText);
+        // only persist a config the user actually supplied — storing the
+        // built-in one would freeze this device on today's copy of it
+        if (firebaseSavedConfigText) localStorage.setItem(FIREBASE_CONFIG_KEY, configText);
         localStorage.setItem(FIREBASE_SYNCCODE_KEY, code);
-      } catch(err){ /* storage unavailable — sync still works this session */ }
+      } catch(err){ /* storage unavailable — the link still carries the code */ }
+      writeSyncCodeToURL(code);
       subscribeFirebaseDoc();
       if (!isAutoStart) renderModalOnly();
     } catch(err){
@@ -833,11 +881,12 @@
     firebaseSyncStatus = 'off';
     firebaseSyncCode = null;
     try{ localStorage.removeItem(FIREBASE_SYNCCODE_KEY); } catch(err){}
+    writeSyncCodeToURL(null);
     render();
   }
 
   var syncDraft;
-  function freshSyncDraft(){ return { configText: firebaseSavedConfigText || '', joinCode: '' }; }
+  function freshSyncDraft(){ return { configText: firebaseSavedConfigText || '', joinCode: '', showAdvanced: false, copied: false }; }
 
   function renderSyncModal(){
     if (!syncDraft) syncDraft = freshSyncDraft();
@@ -846,33 +895,43 @@
     var html = '' +
       '<div class="sheet-handle"></div>' +
       '<span class="close-x" data-action="closeModal">'+icon('close',20)+'</span>' +
-      '<div class="sheet-title">多裝置同步</div>' +
-      '<div style="font-size:12.5px;color:var(--muted);margin:-6px 0 16px 0;">用你自己免費嘅 Firebase 專案，將呢個 app 嘅資料即時同步到你其他裝置。呢個唔係登入戶口——淨係揸住「同步代碼」就可以讀寫呢份資料，千祈唔好將代碼分享俾陌生人。</div>';
+      '<div class="sheet-title">多裝置同步</div>';
 
-    if (!firebaseSavedConfigText){
-      html += '<div class="field"><label>1. 貼上你 Firebase 專案嘅設定（Firebase Console → 專案設定 → 你嘅網頁 App 度複製個 firebaseConfig）</label><textarea id="sync-config" rows="6" placeholder=\'{ apiKey: "...", projectId: "...", ... }\'>'+(d.configText||'')+'</textarea></div>' +
-        '<button type="button" class="btn-primary" style="width:100%;margin-bottom:14px;" data-action="saveFirebaseConfig">儲存設定</button>' +
-        '<div class="modal-actions"><button class="btn-secondary" data-action="closeModal" style="width:100%;">取消</button></div>';
-      return html;
+    // ----- advanced: bring your own Firebase project (optional) -----
+    if (d.showAdvanced){
+      return html +
+        '<div style="font-size:12.5px;color:var(--muted);margin:-6px 0 16px 0;">預設已經用咗一個內置嘅資料庫，唔使自己設定。如果你想改用自己嘅 Firebase 專案，先喺下面貼低個 firebaseConfig。</div>' +
+        '<div class="field"><label>你嘅 Firebase 設定（Firebase Console → 專案設定 → 網頁 App）</label><textarea id="sync-config" rows="6" placeholder=\'{ apiKey: "...", projectId: "...", ... }\'>'+(d.configText||'')+'</textarea></div>' +
+        '<button type="button" class="btn-primary" style="width:100%;margin-bottom:10px;" data-action="saveFirebaseConfig">儲存並改用自己嘅專案</button>' +
+        (firebaseSavedConfigText ? '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:14px;" data-action="resetFirebaseConfig">改返用內置資料庫</button>' : '') +
+        '<div class="modal-actions"><button class="btn-secondary" data-action="hideSyncAdvanced" style="width:100%;">返回</button></div>';
     }
 
-    html += '<div class="hint" style="color:var(--muted);margin-bottom:14px;">狀態：'+statusLabel+(firebaseSyncError?'　'+firebaseSyncError:'')+'</div>';
-
+    // ----- connected -----
     if (firebaseSyncCode && (firebaseSyncStatus==='on' || firebaseSyncStatus==='connecting')){
-      html += '<div class="field"><label>你嘅同步代碼（喺其他裝置輸入呢個代碼就可以加入同步）</label><input type="text" id="sync-code-display" value="'+firebaseSyncCode+'" readonly style="font-weight:700;letter-spacing:0.06em;"></div>' +
-        (firebaseLastSyncedAt ? '<div class="hint" style="color:var(--muted);margin:-8px 0 14px 0;">上次同步：'+new Date(firebaseLastSyncedAt).toLocaleString('zh-HK')+'</div>' : '') +
+      var link = syncShareLink();
+      return html +
+        '<div class="hint" style="color:var(--muted);margin:-6px 0 14px 0;">狀態：'+statusLabel+(firebaseSyncError?'　'+firebaseSyncError:'')+'</div>' +
+        '<div class="field"><label>你嘅同步代碼</label><input type="text" id="sync-code-display" value="'+firebaseSyncCode+'" readonly style="font-weight:700;letter-spacing:0.08em;text-align:center;font-size:17px;"></div>' +
+        '<div class="field"><label>同步連結（喺其他裝置開呢條link就自動連返同一份資料，無痕視窗都用得）</label><input type="text" id="sync-share-link" value="'+link+'" readonly style="font-size:12px;"></div>' +
+        '<button type="button" class="btn-primary" style="width:100%;margin-bottom:10px;" data-action="copySyncLink">'+(d.copied?'已複製 ✓':'複製同步連結')+'</button>' +
+        (firebaseLastSyncedAt ? '<div class="hint" style="color:var(--muted);margin:0 0 12px 0;">上次同步：'+new Date(firebaseLastSyncedAt).toLocaleString('zh-HK')+'</div>' : '') +
+        '<div class="scan-guess-hint" style="color:var(--muted);background:var(--surface-2);">⚠️ 揸住呢條連結／代碼就可以讀寫呢份資料（冇密碼保護），淨係傳俾自己人。</div>' +
         '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:10px;" data-action="manualFirebasePush">立即手動同步</button>' +
-        '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:14px;color:var(--negative);" data-action="stopFirebaseSyncAction">停止呢部裝置嘅同步</button>' +
+        '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:10px;color:var(--negative);" data-action="stopFirebaseSyncAction">停止呢部裝置嘅同步</button>' +
+        '<button type="button" class="link-btn" style="margin-bottom:14px;" data-action="showSyncAdvanced">進階：用自己嘅 Firebase 專案</button>' +
         '<div class="modal-actions"><button class="btn-primary" data-action="closeModal" style="width:100%;">完成</button></div>';
-    } else {
-      html += '<div class="field"><label>2a. 建立一個新嘅同步（呢部裝置依家嘅資料會做起點）</label></div>' +
-        '<button type="button" class="btn-primary" style="width:100%;margin-bottom:18px;" data-action="createSyncCode">建立新同步</button>' +
-        '<div class="field"><label>2b. 或者輸入其他裝置已經有嘅同步代碼（會攞返嗰邊嘅資料，覆蓋呢部裝置依家嘅資料）</label><input type="text" id="sync-join-code" value="'+(d.joinCode||'')+'" placeholder="例如：A1B2-C3D4"></div>' +
-        '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:14px;" data-action="joinSyncCode">加入同步</button>' +
-        '<button type="button" class="link-btn" style="margin-bottom:14px;" data-action="resetFirebaseConfig">← 更改 Firebase 設定</button>' +
-        '<div class="modal-actions"><button class="btn-secondary" data-action="closeModal" style="width:100%;">取消</button></div>';
     }
-    return html;
+
+    // ----- not connected yet: zero setup needed -----
+    return html +
+      '<div style="font-size:12.5px;color:var(--muted);margin:-6px 0 16px 0;">開一次就得，唔使註冊、唔使設定。開咗之後你會收到一條同步連結，喺其他裝置開嗰條link就自動見到同一份資料。</div>' +
+      (firebaseSyncStatus==='error' ? '<div class="scan-guess-hint">狀態：'+statusLabel+'　'+firebaseSyncError+'</div>' : '') +
+      '<button type="button" class="btn-primary" style="width:100%;margin-bottom:18px;" data-action="createSyncCode">開始同步（用呢部裝置嘅資料）</button>' +
+      '<div class="field"><label>或者輸入其他裝置嘅同步代碼（會攞返嗰邊嘅資料，覆蓋呢部裝置依家嘅資料）</label><input type="text" id="sync-join-code" value="'+(d.joinCode||'')+'" placeholder="例如：A1B2-C3D4"></div>' +
+      '<button type="button" class="btn-secondary" style="width:100%;margin-bottom:12px;" data-action="joinSyncCode">加入同步</button>' +
+      '<button type="button" class="link-btn" style="margin-bottom:14px;" data-action="showSyncAdvanced">進階：用自己嘅 Firebase 專案</button>' +
+      '<div class="modal-actions"><button class="btn-secondary" data-action="closeModal" style="width:100%;">取消</button></div>';
   }
 
   function renderTopbar(){
@@ -1378,6 +1437,7 @@
         '<button class="qa-btn" data-action="openAddItineraryItem">'+icon('plus',16)+'新增行程</button>' +
         '<button class="qa-btn" data-action="openAddMember">'+icon('plus',16)+'加入團員</button>' +
         '<button class="qa-btn" data-action="exportTripSummary">'+icon('receipt',16)+'匯出行程總結</button>' +
+        '<button class="qa-btn" data-action="openSync">'+icon('cloud',16)+(firebaseSyncStatus==='on'?'同步中':'多裝置同步')+'</button>' +
       '</div>' +
     '</div>';
 
@@ -2128,22 +2188,73 @@
   function scanPad2(n){ n = String(n); return n.length<2 ? '0'+n : n; }
   var SCAN_MONTHS = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12,
     january:1,february:2,march:3,april:4,june:6,july:7,august:8,september:9,october:10,november:11,december:12};
-  // "Booking Date" / 訂購日期 etc. is when the order was PLACED, not the
-  // travel/stay/purchase date we actually want — matches shortly after that
-  // phrase are kept as a low-priority fallback instead of the first guess.
-  var SCAN_DATE_NOISE = /(booking date|order date|purchase date|訂購日期|落單日期|下單日期|訂單日期)\s*[:：]?\s*$/i;
+  // "Booking Date" / 訂購日期 etc. is when the order was PLACED, and a
+  // cancellation-deadline date ("您可以在 2026年12月1日 前免費取消") is neither
+  // the placed date nor the actual stay/travel date we actually want —
+  // matches shortly after any of these phrases are kept as a low-priority
+  // fallback instead of the first guess.
+  var SCAN_DATE_NOISE = /(booking date|order date|purchase date|訂購日期|落單日期|下單日期|訂單日期|您可以在|免費取消|取消政策|不設退款)\s*[:：]?\s*$/i;
+  // a hotel-stay range almost always appears as ONE line — "2026年12月3日
+  // 週四—12月5日 週六" or "December 3 - December 5, 2026" — where the second
+  // date usually omits the year (and sometimes the month). Matching the
+  // WHOLE range in one go is far more reliable than picking two unrelated
+  // dates out of scanFindDates(), which can just as easily grab a
+  // cancellation-policy date instead of the real check-out date.
+  // a 2-digit year on a receipt is always "this century" in practice
+  function scanYear2(y){ y = Number(y); return String(y < 70 ? 2000 + y : 1900 + y); }
+  function scanFindDateRange(text){
+    // explicit check-in / check-out labels win over any positional guess
+    var ci = /(?:入住|checkin|check-in|check in)\s*(?:日期)?\s*[:：]?\s*([^\n]{4,24})/i.exec(text);
+    var co = /(?:退房|checkout|check-out|check out)\s*(?:日期)?\s*[:：]?\s*([^\n]{4,24})/i.exec(text);
+    if (ci && co){
+      var ciD = scanFindDates(ci[1])[0], coD = scanFindDates(co[1])[0];
+      if (ciD && coD) return { checkIn: ciD, checkOut: coD };
+    }
+    // "2026年12月3日 週四—12月5日 週六" — the 2nd date usually drops the year
+    // (and sometimes the month too), so match the WHOLE range in one go
+    var m = /(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日[^\d\n]{0,12}(?:(\d{1,2})月\s*)?(\d{1,2})日/.exec(text);
+    if (m){
+      var y=m[1], mo1=scanPad2(m[2]), d1=scanPad2(m[3]), mo2=m[4]?scanPad2(m[4]):scanPad2(m[2]), d2=scanPad2(m[5]);
+      return { checkIn: y+'-'+mo1+'-'+d1, checkOut: y+'-'+mo2+'-'+d2 };
+    }
+    // "December 3 - December 5, 2026" / "Dec 3 – 5, 2026"
+    m = /([A-Za-z]{3,9})\s+(\d{1,2})\s*[-–—~至到]\s*([A-Za-z]{3,9})?\s*(\d{1,2}),?\s+(\d{4})/.exec(text);
+    if (m){
+      var mon1 = SCAN_MONTHS[m[1].toLowerCase()], mon2 = m[3] ? SCAN_MONTHS[m[3].toLowerCase()] : mon1;
+      if (mon1 && mon2){
+        return { checkIn: m[5]+'-'+scanPad2(mon1)+'-'+scanPad2(m[2]), checkOut: m[5]+'-'+scanPad2(mon2)+'-'+scanPad2(m[4]) };
+      }
+    }
+    // last resort: any single line that carries two full dates
+    var lines = text.split('\n');
+    for (var i=0;i<lines.length;i++){
+      var found = scanFindDates(lines[i]);
+      if (found.length >= 2) return { checkIn: found[0], checkOut: found[1] };
+    }
+    return null;
+  }
   function scanFindDates(text){
-    var primary = [], fallback = [], m;
+    var primary = [], fallback = [], seen = {}, m;
     function push(idx, value){
+      if (seen[value+'@'+idx]) return;
+      seen[value+'@'+idx] = 1;
       var before = text.slice(Math.max(0, idx-24), idx);
       if (SCAN_DATE_NOISE.test(before)) fallback.push(value); else primary.push(value);
     }
     var re1 = /([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})/g;
     while ((m = re1.exec(text))){ var mon=SCAN_MONTHS[m[1].toLowerCase()]; if (mon) push(m.index, m[3]+'-'+scanPad2(mon)+'-'+scanPad2(m[2])); }
-    var re2 = /\b(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})\b/g;
+    var re2 = /\b(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})\b/g;
     while ((m = re2.exec(text))){ push(m.index, m[1]+'-'+scanPad2(m[2])+'-'+scanPad2(m[3])); }
-    var re3 = /\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\b/g;
+    var re3 = /\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})\b/g;
     while ((m = re3.exec(text))){ push(m.index, m[3]+'-'+scanPad2(m[2])+'-'+scanPad2(m[1])); }
+    // 2-digit-year forms, e.g. a HK receipt's "Date: 29/08/26" (DD/MM/YY).
+    // Without this the commonest receipt date format was matched by NOTHING,
+    // which is why receipts always came back with an empty date field.
+    var re3b = /\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2})\b(?!\d)/g;
+    while ((m = re3b.exec(text))){
+      var a = Number(m[1]), b = Number(m[2]);
+      if (a >= 1 && a <= 31 && b >= 1 && b <= 12) push(m.index, scanYear2(m[3])+'-'+scanPad2(b)+'-'+scanPad2(a));
+    }
     var re4 = /(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日/g;
     while ((m = re4.exec(text))){ push(m.index, m[1]+'-'+scanPad2(m[2])+'-'+scanPad2(m[3])); }
     return primary.concat(fallback);
@@ -2164,24 +2275,161 @@
     return m ? {fromCity:m[1].trim(), fromCode:m[2], toCity:m[3].trim(), toCode:m[4]} : null;
   }
   function scanFindFlightNo(text){ var m = /\b([A-Z]{2}\s?\d{2,4})\b/.exec(text); return m ? m[1].replace(/\s/g,'') : ''; }
+  var SCAN_CURRENCY_CODES = 'HKD|USD|JPY|TWD|CNY|RMB|KRW|THB|SGD|GBP|EUR|AUD|MOP|VND|MYR|PHP|IDR|CAD|CHF|NZD';
+  var SCAN_TOTAL_LINE = /(total|amount due|grand total|subtotal|已付款|實付|应付|應付|總額|总额|總計|总计|合計|合计|金額|金额)/i;
+  // lines whose numbers are identifiers, not money — transaction/slip/approval
+  // numbers and card digits used to win the "largest number" contest and get
+  // filled in as the expense amount.
+  var SCAN_AMOUNT_NOISE = /(slip|staff|trans|approval|invoice|receipt no|order no|booking no|ref|card|barcode|number of items|item[s]?\s*[:：]|訂單編號|單號|交易|編號|會員|電話|\*{3,})/i;
+  // "Trip Coins 節省 HK$3.92" is a rebate, not what was paid
+  var SCAN_REBATE = /(coins|節省|节省|reward|earn|discount|折扣|優惠|saved)/i;
+  function scanMoneyInLine(line){
+    var out = [], m;
+    var reSym = /(HK\$|NT\$|US\$|RMB|R\$|¥|£|€|\$)\s?(\d[\d,]*(?:\.\d{1,2})?)/g;
+    while ((m = reSym.exec(line))){
+      var v = Number(m[2].replace(/,/g, ''));
+      if (!isNaN(v)) out.push({ symbol: m[1], code: '', amount: v });
+    }
+    var reCode = new RegExp('\\b(' + SCAN_CURRENCY_CODES + ')\\b\\s*[:：]?\\s*(\\d[\\d,]*(?:\\.\\d{1,2})?)', 'gi');
+    while ((m = reCode.exec(line))){
+      var v2 = Number(m[2].replace(/,/g, ''));
+      if (!isNaN(v2)) out.push({ symbol: '', code: m[1].toUpperCase(), amount: v2 });
+    }
+    // also "13.0" sitting alone on a Total line with the code before it
+    if (!out.length){
+      var reBare = /(?:^|\s)(\d[\d,]*\.\d{1,2})(?=\s|$)/g;
+      while ((m = reBare.exec(line))){
+        var v3 = Number(m[1].replace(/,/g, ''));
+        if (!isNaN(v3)) out.push({ symbol: '', code: '', amount: v3 });
+      }
+    }
+    return out.filter(function (x) { return x.amount > 0; });
+  }
   function scanFindAmount(text){
-    var best = null, bestVal = -1, m;
-    var re = /(HK\$|NT\$|US\$|R\$|¥|£|€|\$)\s?([\d,]+(?:\.\d{1,2})?)/g;
-    while ((m = re.exec(text))){ var v=Number(m[2].replace(/,/g,'')); if (!isNaN(v) && v>bestVal){ bestVal=v; best={symbol:m[1], amount:v}; } }
-    if (!best){
-      var re2 = /\b(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+\.\d{2})\b/g;
-      while ((m = re2.exec(text))){ var v2=Number(m[1].replace(/,/g,'')); if (!isNaN(v2) && v2>bestVal){ bestVal=v2; best={symbol:'', amount:v2}; } }
+    var lines = text.split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
+    var codeHint = '';
+    var cm = new RegExp('\\b(' + SCAN_CURRENCY_CODES + ')\\b', 'i').exec(text);
+    if (cm) codeHint = cm[1].toUpperCase();
+    // 1. a line that actually says it is the total — by far the most reliable
+    for (var i = 0; i < lines.length; i++){
+      if (!SCAN_TOTAL_LINE.test(lines[i]) || SCAN_REBATE.test(lines[i]) || SCAN_AMOUNT_NOISE.test(lines[i])) continue;
+      var hits = scanMoneyInLine(lines[i]);
+      if (hits.length){
+        var pick = hits.reduce(function (a, b) { return b.amount > a.amount ? b : a; });
+        if (!pick.code && !pick.symbol && codeHint) pick.code = codeHint;
+        return pick;
+      }
+    }
+    // 2. otherwise the largest money-looking value, ignoring identifier lines
+    var best = null;
+    lines.forEach(function (line) {
+      if (SCAN_AMOUNT_NOISE.test(line) || SCAN_REBATE.test(line)) return;
+      scanMoneyInLine(line).forEach(function (h) {
+        if (!h.code && !h.symbol && codeHint) h.code = codeHint;
+        if (!best || h.amount > best.amount) best = h;
+      });
+    });
+    return best;
+  }
+  function scanGuessCurrency(hit){
+    if (!hit) return 'HKD';
+    if (hit.code) return hit.code === 'RMB' ? 'CNY' : hit.code;
+    var map = {'HK$':'HKD','NT$':'TWD','US$':'USD','$':'USD','¥':'JPY','£':'GBP','€':'EUR','R$':'BRL','RMB':'CNY'};
+    return map[hit.symbol] || 'HKD';
+  }
+  function scanFormatMoney(hit){
+    if (!hit) return '';
+    return (hit.symbol || (hit.code ? hit.code + ' ' : '')) + hit.amount;
+  }
+  // booking-confirmation screenshots (Trip.com and similar) are full of
+  // chrome text ABOVE the actual title — order/PIN numbers, badges, "paid",
+  // cancellation terms, action buttons — none of which is what the user
+  // wants filled in. This list is what "first meaningful line" actually
+  // needs to skip past to reach the real title.
+  var SCAN_LINE_NOISE = /booking no\.?|order no\.?|pin\s*碼|confirmed|in \d+ days?|^notice$|trip coins|you'll earn|request ticket|^\d+$|^\d{1,2}:\d{2}$|^[.\d\s%]+$|訂單編號|pin\s*碼|最低價格保證|酒店入住保障|入住保障|價格保證|已付款|已使用|已用|節省|價格詳情|現在可|您可以在|取消政策|免費取消|不設退款|入住[：:]|退房[：:]|修改日期|發送訊息|電話及電郵|住宿詳情|查看地圖|當地語言地址|管理訂單|取消訂單|延長住宿|^位置$|^地址$|^notice/i;
+  function scanFirstMeaningfulLine(text){
+    var lines = text.split('\n').map(function(l){ return l.trim(); }).filter(function(l){ return l.length>=2 && !SCAN_LINE_NOISE.test(l); });
+    return lines[0] || '';
+  }
+  // hotel names reliably contain "酒店/飯店/Hotel/Resort/Inn" — searching for
+  // that keyword directly skips straight past all the chrome text above it,
+  // instead of relying on "first non-noise line" which still tends to catch
+  // whichever chrome line the noise list doesn't yet know about.
+  var SCAN_HOTEL_NAME_HINT = /(酒店|飯店|賓館|hotel|resort|hostel|inn\b|guesthouse)/i;
+  var SCAN_HOTEL_NAME_NOISE = /第\s*\d+\s*名|精選|入住保障|價格保證/;
+  function scanFindHotelName(text){
+    var lines = text.split('\n').map(function(l){ return l.trim(); }).filter(function(l){ return l.length>=2; });
+    for (var i=0;i<lines.length;i++){
+      if (SCAN_HOTEL_NAME_HINT.test(lines[i]) && !SCAN_HOTEL_NAME_NOISE.test(lines[i]) && !SCAN_LINE_NOISE.test(lines[i])) return lines[i];
+    }
+    return scanFirstMeaningfulLine(text);
+  }
+  // ---- receipts: shop name + what was actually bought ----
+  // A till receipt's own header lines (Slip / Staff / Trans / Date / card
+  // digits / the thank-you footer) are all noise; the shop name is the first
+  // real line, and the purchased item sits on a line of its own, usually
+  // prefixed by a barcode/SKU number and followed by its price.
+  var SCAN_RECEIPT_NOISE = /^(slip|staff|trans|date|time|description|amount|items?|total|subtotal|change|cash|visa|master|unionpay|payme|octopus|approval|invoice|tel|no signature|welcome|thank|歡迎|欢迎|打造|多謝|多谢|謝謝|谢谢|請保留|请保留|簽名|签名|收據|收据|發票|发票|統一編號|统一编号)\b/i;
+  var SCAN_RECEIPT_NOISE_ANY = /(\*{3,}|approval code|no signature|qr code|number of items|master card|visa|scan the qr|feedback|顧客體驗|顾客体验|意見|意见)/i;
+  function scanReceiptLines(text){
+    return text.split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
+  }
+  function scanFindMerchant(text){
+    var lines = scanReceiptLines(text);
+    for (var i = 0; i < lines.length; i++){
+      var l = lines[i];
+      if (l.length < 2) continue;
+      if (/^\d[\d\s.,:*\/-]*$/.test(l)) continue;          // pure numbers / times
+      if (SCAN_RECEIPT_NOISE.test(l) || SCAN_RECEIPT_NOISE_ANY.test(l)) continue;
+      if (SCAN_LINE_NOISE.test(l)) continue;
+      if (/^[-=_.\s]+$/.test(l)) continue;                  // separator rules
+      return l.replace(/\s{2,}/g, ' ');
+    }
+    return '';
+  }
+  function scanFindReceiptItem(text){
+    var lines = scanReceiptLines(text);
+    var best = '';
+    for (var i = 0; i < lines.length; i++){
+      var l = lines[i];
+      if (SCAN_RECEIPT_NOISE_ANY.test(l)) continue;
+      // "798846212 麥芽酸種麵包    13.0 A"  → the middle is the item name
+      var m = /^\d{4,}\s+(.{2,40}?)\s+\d[\d,]*(?:\.\d{1,2})?\s*[A-Za-z]?$/.exec(l);
+      if (m && !/^\d+$/.test(m[1].trim())){ return m[1].trim().replace(/\s{2,}/g, ' '); }
+      // a line right after an "Items:" header
+      if (/^items?\s*[:：]?$/i.test(l) && lines[i+1]){
+        var next = lines[i+1].replace(/^\d{4,}\s*/, '').replace(/\s+\d[\d,]*(?:\.\d{1,2})?\s*[A-Za-z]?$/, '').trim();
+        if (next.length >= 2 && !/^\d+$/.test(next)) return next.replace(/\s{2,}/g, ' ');
+      }
+      // generic "<name> <price>" line, kept only as a weaker fallback
+      if (!best){
+        var g = /^([^\d][^\n]{1,38}?)\s+\d[\d,]*\.\d{1,2}\s*[A-Za-z]?$/.exec(l);
+        if (g && !SCAN_RECEIPT_NOISE.test(g[1]) && !SCAN_TOTAL_LINE.test(g[1])) best = g[1].trim();
+      }
     }
     return best;
   }
-  function scanGuessCurrency(symbol){
-    var map = {'HK$':'HKD','NT$':'TWD','US$':'USD','$':'USD','¥':'JPY','£':'GBP','€':'EUR','R$':'BRL'};
-    return map[symbol] || 'HKD';
-  }
-  function scanFirstMeaningfulLine(text){
-    var noise = /booking no\.?|confirmed|in \d+ days?|notice|trip coins|you'll earn|request ticket|^\d+$/i;
-    var lines = text.split('\n').map(function(l){ return l.trim(); }).filter(function(l){ return l.length>=2 && !noise.test(l); });
-    return lines[0] || '';
+  // the address sits right after a "位置/地址/Location/Address" label in
+  // these screenshots, or otherwise looks like "<number> <street>, <area>".
+  // an address names a street/district; requiring one of those words keeps
+  // the loose "<number> ..., ..." fallback from swallowing prose that merely
+  // happens to contain a number and a comma (a cancellation policy, say).
+  var SCAN_ADDRESS_HINT = /(alley|street|st\.|road|rd\.|avenue|ave\.|lane|soi|blvd|district|floor|巷|街|路|道|區|区|里|號|号|樓|楼|層|层)/i;
+  function scanFindAddress(text){
+    var lines = text.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+    for (var i=0;i<lines.length;i++){
+      if (/^(位置|地址|location|address)[:：]?$/i.test(lines[i]) && lines[i+1]) return lines[i+1];
+      var inline = /^(?:位置|地址|location|address)\s*[:：]\s*(.+)$/i.exec(lines[i]);
+      if (inline && inline[1].trim().length >= 4) return inline[1].trim();
+    }
+    for (var j=0;j<lines.length;j++){
+      var l = lines[j];
+      if (l.length < 6 || l.length > 90) continue;
+      if (SCAN_LINE_NOISE.test(l) || SCAN_DATE_NOISE.test(l)) continue;
+      if (/(免費取消|不設退款|取消政策|您可以在|退款)/.test(l)) continue;
+      if (/[,，]/.test(l) && SCAN_ADDRESS_HINT.test(l) && /\d/.test(l)) return l;
+    }
+    return '';
   }
   function parseScanText(){
     var d = scanDraft, text = d.rawText || '';
@@ -2191,9 +2439,29 @@
       var title = route ? (route.fromCity+'（'+route.fromCode+'）→ '+route.toCity+'（'+route.toCode+'）'+(flightNo?(' '+flightNo):'')) : scanFirstMeaningfulLine(text);
       d.parsed = { title:title, date: dates[0]||'', time: times[0]||'12:00', category: route ? '交通' : '景點' };
     } else if (d.kind === 'hotel'){
-      d.parsed = { name: scanFirstMeaningfulLine(text), checkIn: dates[0]||'', checkOut: dates[1]||'', notes: amt ? ('金額參考：'+(amt.symbol||'')+amt.amount) : '' };
+      var range = scanFindDateRange(text);
+      var address = scanFindAddress(text);
+      var notesParts = [];
+      if (amt) notesParts.push('金額參考：'+scanFormatMoney(amt));
+      if (address) notesParts.push('地址：'+address);
+      d.parsed = {
+        name: scanFindHotelName(text),
+        checkIn: range ? range.checkIn : (dates[0]||''),
+        checkOut: range ? range.checkOut : (dates[1]||''),
+        notes: notesParts.join('\n')
+      };
     } else if (d.kind === 'receipt'){
-      d.parsed = { title: scanFirstMeaningfulLine(text), amount: amt?amt.amount:'', currency: amt?scanGuessCurrency(amt.symbol):'HKD', date: dates[0]||'' };
+      // "IKEA 麥芽酸種麵包" reads far better than either half alone, so use
+      // the shop name AND the purchased item whenever both can be found.
+      var merchant = scanFindMerchant(text);
+      var item = scanFindReceiptItem(text);
+      var receiptTitle = (merchant && item) ? (merchant + ' ' + item) : (merchant || item || scanFirstMeaningfulLine(text));
+      d.parsed = {
+        title: receiptTitle,
+        amount: amt ? amt.amount : '',
+        currency: scanGuessCurrency(amt),
+        date: dates[0] || ''
+      };
     }
   }
   function applyScanResult(){
@@ -2716,18 +2984,39 @@
       firebaseSavedConfigText = cfgTxt;
       try{ localStorage.setItem(FIREBASE_CONFIG_KEY, cfgTxt); } catch(err){}
       syncDraft.configText = cfgTxt;
+      syncDraft.showAdvanced = false;
       renderModalOnly();
       return;
     }
     if (action === 'resetFirebaseConfig'){
       firebaseSavedConfigText = '';
       try{ localStorage.removeItem(FIREBASE_CONFIG_KEY); } catch(err){}
+      syncDraft.configText = '';
+      syncDraft.showAdvanced = false;
       renderModalOnly();
+      return;
+    }
+    if (action === 'showSyncAdvanced'){ syncDraft.showAdvanced = true; renderModalOnly(); return; }
+    if (action === 'hideSyncAdvanced'){ syncDraft.showAdvanced = false; renderModalOnly(); return; }
+    if (action === 'copySyncLink'){
+      var linkEl = document.getElementById('sync-share-link');
+      var linkText = linkEl ? linkEl.value : syncShareLink();
+      var markCopied = function(){ syncDraft.copied = true; renderModalOnly(); };
+      if (navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(linkText).then(markCopied).catch(function(){
+          if (linkEl){ linkEl.select(); }
+          showAlert('複製唔到，請自己長按揀走條連結。');
+        });
+      } else if (linkEl){
+        linkEl.select();
+        try{ document.execCommand('copy'); markCopied(); }
+        catch(err){ showAlert('複製唔到，請自己長按揀走條連結。'); }
+      }
       return;
     }
     if (action === 'createSyncCode'){
       var newCode = generateSyncCode();
-      connectFirebase(firebaseSavedConfigText, newCode, false);
+      connectFirebase(activeFirebaseConfigText(), newCode, false);
       pushFirebaseNow();
       renderModalOnly();
       return;
@@ -2737,7 +3026,7 @@
       var joinCode = joinEl ? joinEl.value.trim().toUpperCase() : '';
       if (!joinCode){ showAlert('請輸入同步代碼。'); return; }
       showConfirm('加入同步之後，呢部裝置依家嘅資料會俾同步代碼嗰邊嘅資料覆蓋，確定要繼續？', function(){
-        connectFirebase(firebaseSavedConfigText, joinCode, false);
+        connectFirebase(activeFirebaseConfigText(), joinCode, false);
         renderModalOnly();
       });
       return;
